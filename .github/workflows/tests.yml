@@ -1,0 +1,14 @@
+name: tests
+on: [push, pull_request]
+jobs:
+  pytest:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: astrometry.net (for the plate-solving test)
+        run: sudo apt-get update && sudo apt-get install -y astrometry.net astrometry-data-tycho2-10-19
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: pytest -q

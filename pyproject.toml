@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "skyclock"
+version = "0.1.0"
+description = "Time and place from satellite streaks in a night photo"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "astropy>=6.0",
+  "skyfield>=1.48",
+  "sgp4>=2.23",
+  "pillow>=10",
+  "requests>=2.31",
+  "matplotlib>=3.8",
+  "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+app = ["streamlit>=1.35", "folium>=0.16", "streamlit-folium>=0.20"]
+raw = ["rawpy>=0.19"]
+test = ["pytest>=7"]
+
+[project.scripts]
+skyclock = "skyclock.cli:main"
+
+[tool.setuptools]
+packages = ["skyclock"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::RuntimeWarning", "ignore::DeprecationWarning"]

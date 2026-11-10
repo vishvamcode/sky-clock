@@ -1,0 +1,14 @@
+services:
+  skyclock:
+    build: .
+    ports:
+      - "8501:8501"
+    volumes:
+      - skyclock-data:/data   # catalogue cache only; photos are never written to disk
+    environment:
+      # optional, read from your shell or a local .env file (never commit it)
+      - SPACETRACK_USER
+      - SPACETRACK_PASSWORD
+      - ASTROMETRY_NET_API_KEY
+volumes:
+  skyclock-data:

@@ -1,0 +1,25 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+# satellite data: Space-Track history must not be redistributed; keep caches local
+.cache/
+skyclock_cache/
+*.tle
+spacetrack_*.json
+celestrak_*.json
+supgp_*.json
+# secrets
+.env
+*.key
+secrets.toml
+.streamlit/secrets.toml
+# outputs
+skyclock_out/
+demo*.png
+demo*.wcs
+demo*.truth.json
