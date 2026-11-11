@@ -22,8 +22,8 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000):
-    """Draw detected streaks (numbered), their identifications and predicted tracks."""
+def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000, up_marks=None):
+    """Draw detected streaks (numbered), their identifications, predicted tracks and marked verticals."""
     im = Image.fromarray(display_rgb)
     W, H = im.size
     f = min(1.0, max_side / max(W, H))
@@ -63,6 +63,14 @@ def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000)
         tx = float(np.clip(tx, 2, im.size[0] - (bb[2] - bb[0]) - 2))
         ty = float(np.clip(ty, 2, im.size[1] - (bb[3] - bb[1]) - 6))
         d.text((tx, ty), label, fill=c, font=font, stroke_width=2, stroke_fill="black")
+    if up_marks is not None:
+        for i, (x1, y1, x2, y2) in enumerate(up_marks.verticals):
+            d.line([(x1 * f, y1 * f), (x2 * f, y2 * f)], fill="#00e5ff", width=lw)
+            d.text((x1 * f + 4, y1 * f + 4), f"V{i + 1}", fill="#00e5ff", font=font, stroke_width=2,
+                   stroke_fill="black")
+        for x, y in up_marks.horizon:
+            r = 2 * lw
+            d.ellipse([x * f - r, y * f - r, x * f + r, y * f + r], outline="#00e5ff", width=lw)
     return im
 
 
@@ -174,6 +182,11 @@ def summary_markdown(result, plate_summary=None):
             L.append(f"  - unexplained streaks: {', '.join('#' + str(u) for u in s.unmatched)}")
         for n in s.notes:
             L.append(f"  - {n}")
+    z = getattr(result, "zenith", None)
+    if z:
+        L.append("")
+        L.append(f"**Zenith from the marked lines:** RA {z['radec_deg'][0]:.2f}, Dec {z['radec_deg'][1]:.2f} deg "
+                 f"(+-{z['sigma_deg']:.2f} deg, {z['n_marks']} marks)")
     for n in result.notes:
         L.append(f"> {n}")
     if result.catalog_info:

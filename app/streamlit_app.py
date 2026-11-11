@@ -26,6 +26,12 @@ from skyclock.observations import build as build_obs  # noqa: E402
 from skyclock.pipeline import CATALOG_CHOICES, load_catalog, plate_hint, plate_solve  # noqa: E402
 from skyclock.platesolve import local_solver_available  # noqa: E402
 from skyclock.solve import MODES, Settings, analyze  # noqa: E402
+from skyclock.zenith import UpMarks  # noqa: E402
+
+try:  # optional: click on the photo to mark lines (pip install streamlit-image-coordinates)
+    from streamlit_image_coordinates import streamlit_image_coordinates
+except Exception:  # pragma: no cover
+    streamlit_image_coordinates = None
 
 st.set_page_config(page_title="sky-clock", page_icon="🛰️", layout="wide")
 
@@ -169,6 +175,68 @@ st.caption(f"{len(det.streaks)} streak(s), {len(det.stars)} star(s). " + " ".joi
 if hints:
     st.caption("EXIF: " + ", ".join(f"{k} = {v}" for k, v in hints.items()))
 
+# ------------------------------------------------------------------ which way is up (optional)
+def _marks_ui(img_key):
+    """Vertical edges / level horizon marked on the photo -> UpMarks (or None)."""
+    vk, hk, ck = "vert_" + img_key, "hor_" + img_key, "click_" + img_key
+    st.session_state.setdefault(vk, [])
+    st.session_state.setdefault(hk, [])
+    with st.expander("Optional: mark which way is up (vertical edges or a sea horizon)", expanded=False):
+        st.markdown(
+            "If the photo shows **truly vertical** things (a building corner, a lamp post, a door frame) or a **level "
+            "sea horizon**, mark them. Together with the stars they give the latitude, and the longitude once the "
+            "time is known. With satellites they turn a single streak's line of places into a point. Mark edges as "
+            "long as possible; avoid trees and anything that may lean.")
+        H, W = gray.shape
+        cur = UpMarks(verticals=st.session_state[vk], horizon=st.session_state[hk])
+        if streamlit_image_coordinates is not None:
+            what = st.radio("A click on the photo adds", ["vertical edge (click both ends)", "horizon point"],
+                            horizontal=True, key="what_" + img_key)
+            prev = report.annotate(disp, det.streaks, up_marks=cur, max_side=1200)
+            click = streamlit_image_coordinates(prev, key="img_" + img_key)
+            if click and click.get("unix_time") != st.session_state.get(ck + "_t"):
+                st.session_state[ck + "_t"] = click.get("unix_time")
+                f = W / float(click.get("width") or prev.size[0])
+                x, y = round(click["x"] * f, 1), round(click["y"] * f, 1)
+                if what.startswith("horizon"):
+                    st.session_state[hk].append([x, y])
+                else:
+                    pend = st.session_state.get(ck)
+                    if pend is None:
+                        st.session_state[ck] = [x, y]
+                    else:
+                        st.session_state[vk].append(pend + [x, y])
+                        st.session_state[ck] = None
+                st.rerun()
+            if st.session_state.get(ck):
+                st.caption(f"First end at {st.session_state[ck]}: now click the other end of the same edge.")
+        else:
+            st.caption("Type pixel coordinates (x to the right, y down, from the top-left corner) from any image "
+                       "viewer. Install streamlit-image-coordinates to click on the photo instead.")
+        c1, c2 = st.columns(2)
+        vdf = pd.DataFrame(st.session_state[vk] or [], columns=["x1", "y1", "x2", "y2"], dtype=float)
+        ved = c1.data_editor(vdf, num_rows="dynamic", key=f"ved_{img_key}_{len(vdf)}", hide_index=True)
+        hdf = pd.DataFrame(st.session_state[hk] or [], columns=["x", "y"], dtype=float)
+        hed = c2.data_editor(hdf, num_rows="dynamic", key=f"hed_{img_key}_{len(hdf)}", hide_index=True)
+        st.session_state[vk] = [list(map(float, r)) for r in ved.dropna().to_numpy()]
+        st.session_state[hk] = [list(map(float, r)) for r in hed.dropna().to_numpy()]
+        c1, c2, c3 = st.columns(3)
+        level = c1.checkbox("Camera was level (no tilt sideways)", False, key="lvl_" + img_key)
+        hh = c2.number_input("Eye height above the horizon (m)", 0.0, 9000.0, 2.0, key="hh_" + img_key)
+        if c3.button("Clear marks", key="clr_" + img_key):
+            st.session_state[vk], st.session_state[hk], st.session_state[ck] = [], [], None
+            st.rerun()
+    m = UpMarks(verticals=st.session_state[vk], horizon=st.session_state[hk], horizon_height_m=hh,
+                camera_level=level)
+    if m.empty():
+        return None
+    if len(m.verticals) + int(m.camera_level) < 2 and len(m.horizon) < 3:
+        st.caption("Up marks: one vertical edge alone is not enough; mark at least two (or 3 horizon points).")
+    return m
+
+
+up_marks = _marks_ui(img_key)
+
 # ------------------------------------------------------------------ question
 st.header("2. What do you want to know?")
 mode = st.radio("Mode", list(MODES), format_func=lambda m: f"{m}: {MODES[m]}", horizontal=False)
@@ -177,7 +245,7 @@ if demo_truth is not None:
     d_time = datetime(2026, 11, 10, 16, 10, tzinfo=timezone.utc)
 d_lat = hints.get("lat", 59.33 if demo_truth is not None else 0.0)
 d_lon = hints.get("lon", 18.06 if demo_truth is not None else 0.0)
-s = Settings(mode=mode, tracking=tracking, h_km=h_m / 1000.0)
+s = Settings(mode=mode, tracking=tracking, h_km=h_m / 1000.0, up_marks=up_marks)
 if mode in ("identify", "check", "place"):
     s.time = _dt_input("Exposure start" + (" (claimed)" if mode == "check" else " (approximate)"), d_time, "t")
     s.sigma_time_s = st.number_input("Time uncertainty, 1 sigma (s)", 0.1, 3600.0,
@@ -216,7 +284,8 @@ if mode in ("blind", "place", "time"):
     consent = st.checkbox("I confirm this is my own photo, or a public image whose claimed time/place I am "
                           "verifying, and I will not use the result to locate a private person.")
 
-go = st.button("Analyse", type="primary", disabled=not consent or not any(x.enabled for x in det.streaks))
+go = st.button("Analyse", type="primary",
+               disabled=not consent or not (any(x.enabled for x in det.streaks) or up_marks is not None))
 if not go and "last" not in st.session_state:
     st.stop()
 
@@ -268,6 +337,16 @@ if res.verdict:
     box(f"**{v['status'].upper()}**: {v['text']}")
 for n in res.notes:
     st.warning(n)
+if res.zenith and "lat" in res.zenith and not res.solutions:
+    z = res.zenith
+    z1, z2 = st.columns(2)
+    z1.metric("Latitude from the marked lines", f"{z['lat']:.3f}")
+    if "lon" in z:
+        z2.metric("Longitude (at the given time)", f"{z['lon']:.3f}")
+        z2.caption(f"+-{z['sigma_east_km']:.0f} km E, +-{z['sigma_north_km']:.0f} km N")
+    elif "time_utc" in z:
+        z2.metric("Time (at the given longitude)", z["time_utc"][11:19] + " UTC")
+        z2.caption(f"+-{z['sigma_t_s'] / 60:.0f} min")
 if res.solutions:
     b = res.solutions[0]
     m1, m2, m3, m4 = st.columns(4)
@@ -292,7 +371,7 @@ if res.solutions:
 c1, c2 = st.columns([3, 2])
 with c1:
     sol0 = res.solutions[0] if res.solutions else None
-    st.image(report.annotate(disp, det.streaks, sol0, last["pred"]), use_container_width=True,
+    st.image(report.annotate(disp, det.streaks, sol0, last["pred"], up_marks=up_marks), use_container_width=True,
              caption="Coloured: detected streaks with identifications. Yellow: predicted satellite tracks for "
                      "the best solution.")
 with c2:

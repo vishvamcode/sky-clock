@@ -41,6 +41,8 @@ class Settings:
     region: tuple | None = None  # (lat, lon, radius_km) limit for place/blind searches
     max_solutions: int = 5
     max_clusters: int = 25
+    up_marks: object | None = None  # zenith.UpMarks: vertical edges / level horizon marked in the photo
+    zenith: object | None = None  # zenith.Zenith (computed from up_marks once the plate is solved)
 
     def epoch(self):
         ref = self.time or self.window_start
@@ -89,10 +91,11 @@ class Result:
     catalog_info: dict | None = None
     locus: list | None = None  # single-streak degenerate loci: list of [[lat, lon], ...]
     epoch: Epoch | None = None
+    zenith: dict | None = None  # what the marked verticals / horizon alone say (see zenith_only)
 
     def to_dict(self):
         return dict(mode=self.mode, solutions=[s.to_dict() for s in self.solutions], verdict=self.verdict,
-                    notes=self.notes, catalog=self.catalog_info, locus=self.locus)
+                    notes=self.notes, catalog=self.catalog_info, locus=self.locus, zenith=self.zenith)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -104,7 +107,7 @@ def _fit_assignment(obs, assign, catalog, epoch, lat, lon, t, s: Settings, scale
     T0 = s.exposure_s or min(initial_T(o_list, k_list, catalog, epoch, lat, lon, t, s.h_km, default=10.0),
                              s.exposure_max_s)
     fitter = Fitter(o_list, k_list, catalog, epoch, s.h_km, s.tracking, scale,
-                    T_max=s.exposure_s or s.exposure_max_s)
+                    T_max=s.exposure_s or s.exposure_max_s, zenith=s.zenith)
     m = len(o_list)
     x0 = np.concatenate([[lat, lon, t, T0], np.zeros(2 * m)])
     free = np.ones(len(x0), bool)
@@ -126,7 +129,7 @@ def _fit_assignment(obs, assign, catalog, epoch, lat, lon, t, s: Settings, scale
         free[3] = False
     elif prior_T is not None:
         priors[3] = prior_T
-    if m == 1 and free[0] and free[1] and 0 not in priors:
+    if m == 1 and free[0] and free[1] and 0 not in priors and s.zenith is None:
         # one streak: the location is a 1-D locus; a weak prior keeps the problem well posed
         priors[0] = (lat, 30.0 / KM_PER_DEG_LAT)
         priors[1] = (lon, 30.0 / (KM_PER_DEG_LAT * max(np.cos(np.radians(lat)), 0.05)))
@@ -214,7 +217,7 @@ def evaluate(obs, catalog, epoch, lat, lon, t, s: Settings, scale, assign=None, 
     if best is None:
         return None
     res, fitter, oi, kl = best
-    return _solution_from_fit(res, fitter, oi, kl, catalog, epoch, obs, notes, loc_constrained=priors_loc is not None)
+    return _solution_from_fit(res, fitter, oi, kl, catalog, epoch, obs, notes, loc_constrained=priors_loc is not None or s.zenith is not None)
 
 
 def _dedupe(sols, km=25.0, sec=8.0):
@@ -227,8 +230,26 @@ def _dedupe(sols, km=25.0, sec=8.0):
     return out
 
 
+ZENITH_MAX_SIGMA_DEG = 3.0  # beyond this the linearised zenith error model is not trustworthy
+
+
 def analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
+    zen_fail = weak = False
+    if s.zenith is None and s.up_marks is not None and not s.up_marks.empty():
+        from dataclasses import replace
+        from .zenith import find_zenith
+        z = find_zenith(s.up_marks, plate)
+        zen_fail = z is None
+        weak = z is not None and z.sigma_deg > ZENITH_MAX_SIGMA_DEG
+        s = replace(s, zenith=None if weak else z)
     result = _analyze(obs, plate, catalog, s, progress)
+    if weak:
+        result.notes.append(f"The marked lines fix the zenith only to +-{z.sigma_deg:.0f} deg (edges too short, too "
+                            "close together or too parallel), so they were not used. Longer edges far apart "
+                            "across the photo work best.")
+    if zen_fail:
+        result.notes.append("The marked verticals/horizon were not used: mark at least two vertical edges, each "
+                            "a good length, or at least three points on a level horizon.")
     _plain_language_notes(result, obs, s)
     return result
 
@@ -247,6 +268,14 @@ def _plain_language_notes(result: Result, obs, s: Settings):
         result.notes.insert(0, f"AMBIGUOUS: {len(ties) + 1} solutions fit about equally well ({names}). The photo "
                                "alone cannot choose between them. A second streak from another orbit, the time to "
                                "within a few minutes, or the exact place would.")
+    if s.zenith is not None and result.epoch is not None:
+        from .zenith import zenith_residuals
+        zr = zenith_residuals(s.zenith, result.epoch, best.lat, best.lon, result.epoch.seconds_from(best.t_mid))
+        if float(zr @ zr) > 13.8:  # p < 0.001 for 2 degrees of freedom
+            result.notes.insert(0, "CHECK THE MARKED LINES: the vertical edges / horizon you marked disagree with "
+                                   f"the satellites by {np.sqrt(float(zr @ zr) / 2):.0f} sigma. A marked edge may not "
+                                   "be truly vertical (leaning tree, perspective of a sloping roof), or the horizon "
+                                   "may not be level. Remove it and run again.")
     if best.dof > 0 and best.chi2 / best.dof > 3:
         result.notes.insert(0, f"POOR FIT: even the best solution has chi2/dof = {best.chi2 / best.dof:.1f} "
                                "(about 1 is expected). The streak may be from an uncatalogued object or an aircraft, "
@@ -268,10 +297,20 @@ def _analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
             and abs(result.catalog_info["median_age_days"]) > 3):
         result.notes.append("Catalogue epochs are more than 3 days from the photo: expect km-level and "
                             "second-level errors (use Space-Track history for old photos).")
+    if s.zenith is not None:
+        from .zenith import zenith_only
+        mid = None
+        if s.window_start is not None and s.window_end is not None:
+            mid = s.window_start + (s.window_end - s.window_start) / 2
+        known_t = s.time if s.mode in ("identify", "check", "place") else None
+        known_lon = s.lon if s.mode in ("time",) else None
+        result.zenith, zn = zenith_only(s.zenith, known_t, s.lat, known_lon, mid or s.time)
+        result.notes.extend(zn)
     if not obs:
-        result.notes.append("No usable streaks.")
+        result.notes.append("No usable streaks." + (" The place/time above comes from the marked verticals only."
+                                                    if s.zenith is not None else ""))
         return result
-    if len(obs) == 1:
+    if len(obs) == 1 and s.zenith is None:
         result.notes.append("Only one streak: the place is constrained to a line (or set of lines), not a "
                             "point. Time can still be found if the place is known, and vice versa.")
     T_guess = s.exposure_s or 10.0
@@ -344,6 +383,19 @@ def _analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
                                              region=region, progress=progress)
     if len(obs) == 1:
         result.locus = _locus(segs[0], roots[0], catalog, epoch)
+        zr = result.zenith or {}
+        if s.mode == "place" and "lon" in zr:
+            # the marked verticals pin the place to within tens of km; identify the streak from there and
+            # fit streak + zenith together (the streak then sharpens the place along its line)
+            sig0 = float(np.hypot(zr["sigma_east_km"], zr["sigma_north_km"]))
+            sol = evaluate(obs, catalog, epoch, zr["lat"], zr["lon"], tc, s, scale,
+                           sig_loc=float(np.clip(3 * sig0, 20.0, 300.0)), sig_t=max(s.sigma_time_s, 2.0),
+                           priors_t=pt)
+            if sol is not None:
+                result.solutions = [sol]
+                result.notes.append("One streak plus the marked verticals: the verticals choose the point on the "
+                                    "streak's line of possible places.")
+                return result
         result.notes.append(f"{len(result.locus)} possible ground tracks (one per satellite that could have made "
                             "the streak). Add a second streak, the place, or a narrower time to resolve.")
         return result
