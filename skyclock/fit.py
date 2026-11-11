@@ -28,6 +28,25 @@ from .geometry import Epoch, geodetic_to_itrs, unit
 SIG_DT = 0.28  # s, per-satellite along-track timing error
 SIG_SHARED_DT = 0.30  # s, shared along-track bias (all satellites move together)
 SIG_CROSS_KM = 0.5  # km, per-satellite cross-track error
+
+
+def _load_calibration():
+    """Override the three numbers above from skyclock/calibration.json (written by
+    ``skyclock benchmark FOLDER --apply`` after scoring photos with a known time and place)."""
+    import json
+    from pathlib import Path
+    p = Path(__file__).with_name("calibration.json")
+    if not p.exists():
+        return None
+    d = json.loads(p.read_text())
+    g = globals()
+    for k in ("SIG_DT", "SIG_SHARED_DT", "SIG_CROSS_KM"):
+        if k in d:
+            g[k] = float(d[k])
+    return d
+
+
+CALIBRATION = _load_calibration()
 KM_PER_DEG_LAT = 111.2
 
 

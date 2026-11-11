@@ -1,0 +1,11 @@
+{
+ "time_utc": "2026-11-20T16:05:12.3Z",
+ "time_uncertainty_s": 0.3,
+ "lat": 59.32930,
+ "lon": 18.06860,
+ "height_m": 25,
+ "exposure_s": 15,
+ "catalog": "celestrak",
+ "tracking": false,
+ "notes": "16 mm, f/2.8, ISO 3200, tripod; clock offset +1.4 s from time.is shots"
+}

@@ -1,4 +1,4 @@
-"""Command line: ``skyclock analyze | simulate | detect | fetch``."""
+"""Command line: ``skyclock analyze | simulate | detect | fetch | benchmark``."""
 from __future__ import annotations
 
 import argparse
@@ -115,9 +115,37 @@ def cmd_fetch(a):
     print(f"{c.source}: {len(c)} LEO objects cached")
 
 
+def cmd_benchmark(a):
+    from . import validate as V
+    folder = Path(a.folder)
+    if a.simulate:
+        n = V.make_simulated_set(folder, a.simulate, seed=a.seed, dashed=a.dashed,
+                                 catalog_errors=not a.exact_catalog)
+        print(f"made {n} simulated photos with truth files in {folder}", file=sys.stderr)
+    modes = tuple(m.strip() for m in a.modes.split(","))
+    rows, summary, calib, report_path = V.score_folder(folder, modes, progress=lambda m: print("  " + m, file=sys.stderr))
+    print(report_path.read_text())
+    if a.apply:
+        if not calib.get("enough") and not a.force:
+            sys.exit("fewer than 8 uniquely solved photos per mode: not applying (use --force to apply anyway)")
+        print(f"wrote {V.apply_calibration(calib)}; the solver uses it from the next run", file=sys.stderr)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="skyclock", description="Time and place from satellite streaks in a night photo")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    bm = sub.add_parser("benchmark", help="score photos with known time and place (FOLDER/*.truth.json)")
+    bm.add_argument("folder")
+    bm.add_argument("--modes", default="check,time,place", help="comma list of check,time,place,blind")
+    bm.add_argument("--apply", action="store_true", help="write the suggested error model to skyclock/calibration.json")
+    bm.add_argument("--force", action="store_true", help="apply even with fewer than 8 photos")
+    bm.add_argument("--simulate", type=int, default=0, help="first make this many simulated photos in FOLDER")
+    bm.add_argument("--dashed", action="store_true", help="simulated photos: dashed streaks (phone night mode)")
+    bm.add_argument("--exact-catalog", action="store_true",
+                    help="simulated photos: draw satellites exactly where the catalogue says (no catalogue errors)")
+    bm.add_argument("--seed", type=int, default=0)
+    bm.set_defaults(func=cmd_benchmark)
 
     an = sub.add_parser("analyze", help="analyse a photo")
     an.add_argument("image")

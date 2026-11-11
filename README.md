@@ -209,6 +209,13 @@ the simulations test internal consistency and statistics, not agreement with the
 catalogue error model (0.28 s, 0.5 km, shared 0.3 s) is an estimate for public GP data and needs
 calibration.
 
+**Benchmark.** `skyclock benchmark FOLDER` scores every photo in a folder that has a
+`<photo>.truth.json` (true UTC start time, place, optional exposure) in check, time and place modes (and
+blind with `--modes blind`), and writes `results.csv`, `report.md` and a suggested error model;
+`--apply` makes the solver use it. `skyclock benchmark FOLDER --simulate 20` first makes 20 simulated
+photos whose satellites are drawn with realistic catalogue errors, to test the harness itself. The field
+checklist for a real benchmark night is in [docs/validation/README.md](docs/validation/README.md).
+
 **Validation protocol for real photos** (cheap, and worth doing before trusting the numbers):
 
 1. Take 10 to 20 photos yourself on a tripod (wide lens, 5 to 20 s, ISO 1600 to 6400) in the hour after
