@@ -141,6 +141,12 @@ skyclock sun photo.jpg --pole 812,2210,830,1480,1290,2400 --pole 2410,2050,2422,
 skyclock sun photo.jpg --pole ... --lat 59.33 --lon 18.06 --time 2026-06-01T12:00:00Z   # -> time
 ```
 
+## Public website
+
+`docs/deploy.md` compares hosts (a Hugging Face Space with PRO, deployed automatically from `main`, or Google
+Cloud Run's free tier) and gives the setup steps. The public mode (`SKYCLOCK_PUBLIC=1`) caps searches, hides password fields and asks every user to
+confirm responsible use. The app's **About** page states what it does, how well, and what happens to photos.
+
 ## Command line
 
 ```bash
@@ -304,7 +310,8 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
 skyclock/      library: catalog, geometry, imageio, detect, platesolve, observations,
                fit, identify, search, solve, report, pipeline, simulate, zenith, bodies, sun,
                validate, cli
-app/           Streamlit web app (pages/2_Daytime.py: the daytime page)
+app/           Streamlit web app (pages/2_Daytime.py: daytime, pages/3_About.py: about and privacy)
+deploy/        Hugging Face Space front matter (used by .github/workflows/deploy-space.yml)
 tests/         pytest suite
 docs/feasibility/   original feasibility report, figures and simulation scripts
 ```

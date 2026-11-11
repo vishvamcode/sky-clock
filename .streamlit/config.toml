@@ -1,0 +1,10 @@
+[server]
+maxUploadSize = 60          # MB; RAW files from big sensors need a bit more than JPEGs
+enableXsrfProtection = true
+enableCORS = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"

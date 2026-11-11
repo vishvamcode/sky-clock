@@ -13,9 +13,14 @@ COPY requirements.txt .
 RUN python3 -m venv /venv && /venv/bin/pip install -r requirements.txt
 ENV PATH="/venv/bin:$PATH"
 COPY . .
-RUN pip install --no-deps -e .
+RUN pip install --no-deps -e . \
+    && mkdir -p /data/cache && chown -R 1000:1000 /data
+# run as the unprivileged user (uid 1000 = "ubuntu"), as Hugging Face Spaces and good practice require
+USER 1000
+ENV HOME=/home/ubuntu PORT=8501
 
 EXPOSE 8501
 VOLUME ["/data"]
-CMD ["streamlit", "run", "app/streamlit_app.py", "--server.address=0.0.0.0", "--server.port=8501", \
-     "--browser.gatherUsageStats=false"]
+# PORT: 8501 locally, 7860 on Hugging Face Spaces (set there via the Space's app_port and PORT variable)
+CMD streamlit run app/streamlit_app.py --server.address=0.0.0.0 --server.port=${PORT} \
+    --browser.gatherUsageStats=false

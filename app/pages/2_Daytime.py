@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from skyclock import sun as SU  # noqa: E402
 from skyclock.imageio import exif_hints, load_image  # noqa: E402
+from skyclock import public  # noqa: E402
 
 try:
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -116,6 +117,9 @@ if fix.az_deg is not None:
 for n in fix.notes:
     st.caption(n)
 
+if public.PUBLIC and not st.checkbox("I confirm this is my own photo, or a public image whose claimed time/place "
+                                     "I am verifying, and I will not use the result to locate a private person."):
+    st.stop()
 st.header("What do you know?")
 mode = st.radio("Known", ["the time: find the place", "the place: find the time"], horizontal=True)
 d0 = h.get("time_utc") or datetime.now(timezone.utc).replace(microsecond=0)

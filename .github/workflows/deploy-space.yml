@@ -1,0 +1,39 @@
+# Publishes main to a Hugging Face Space after the tests pass.
+# Does nothing until the repository owner adds the secret HF_TOKEN and the variable HF_SPACE
+# (for example "your-name/sky-clock"); see docs/deploy.md.
+name: deploy-space
+on:
+  workflow_run:
+    workflows: [tests]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+jobs:
+  deploy:
+    if: ${{ (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') && vars.HF_SPACE != '' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Space front matter, public-site settings
+        run: |
+          cp deploy/huggingface/README.md README.md
+          sed -i 's/^ENV HOME=\/home\/ubuntu PORT=8501/ENV HOME=\/home\/ubuntu PORT=7860 SKYCLOCK_PUBLIC=1/' Dockerfile
+          grep -q "PORT=7860 SKYCLOCK_PUBLIC=1" Dockerfile
+      - name: Push to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ vars.HF_SPACE }}
+        run: |
+          test -n "$HF_TOKEN" || { echo "HF_TOKEN secret missing"; exit 1; }
+          # the Space needs only the app; Hugging Face refuses plain-git binary files (the docs figures)
+          rm -rf .git docs tests scripts .github
+          ! find . -type f -exec file --mime-encoding {} + | grep -v "us-ascii\|utf-8\|empty" | grep . || { echo "binary file left"; exit 1; }
+          git init -q -b main
+          git config user.name "sky-clock deploy"
+          git config user.email "deploy@users.noreply.github.com"
+          git add -A
+          git commit -qm "deploy ${GITHUB_SHA::7}"
+          git push -f "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" main
