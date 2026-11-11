@@ -32,6 +32,7 @@ class PlateSolution:
     solver: str
     rms_px: float | None = None
     n_match: int | None = None
+    matched_xy: np.ndarray | None = None  # (n, 2) pixel positions of sources matched to catalogue stars
 
     def pix2unit(self, x, y):
         ra, dec = self.wcs.all_pix2world(np.asarray(x, float), np.asarray(y, float), 0)
@@ -115,8 +116,8 @@ def solve_local(stars, shape, scale_low_deg=3.0, scale_high_deg=180.0, cpulimit=
             return None
         hdr = fits.getheader(wd / "out.wcs")
         wcs = WCS(hdr)
-        rms, nm = _corr_rms(wcs, wd / "out.corr", flip_h=None)
-        return PlateSolution(wcs, (H, W), "astrometry.net (local)", rms, nm)
+        rms, nm, mxy = _corr_rms(wcs, wd / "out.corr", flip_h=None)
+        return PlateSolution(wcs, (H, W), "astrometry.net (local)", rms, nm, mxy)
 
 
 SCALE_BANDS = [(40.0, 180.0), (12.0, 45.0), (3.0, 14.0)]  # field width (deg): wide/fisheye, normal, tele
@@ -153,9 +154,9 @@ def _corr_rms(wcs, corr_path, flip_h=None):
             fy = flip_h - 1 - fy
         px, py = wcs.all_world2pix(t["index_ra"], t["index_dec"], 0, quiet=True)
         r = np.hypot(px - fx, py - fy)
-        return float(np.sqrt(np.mean(r**2))), int(len(r))
+        return float(np.sqrt(np.mean(r**2))), int(len(r)), np.column_stack([fx, fy]).astype(float)
     except Exception:
-        return None, None
+        return None, None, None
 
 
 def from_wcs(src, shape) -> PlateSolution:
@@ -236,8 +237,8 @@ def solve_nova(api_key: str, gray_display_png: bytes, stars, shape, scale_low_de
     if flip is not None:
         # Re-express WCS for y_ours = H-1-y_nova: build by fitting via pixel transformation
         wcs = _flip_wcs_y(wcs, H)
-    rms, nm = _corr_rms_bytes(wcs, corr_bytes, flip)
-    return PlateSolution(wcs, (H, W), "nova.astrometry.net", rms, nm)
+    rms, nm, mxy = _corr_rms_bytes(wcs, corr_bytes, flip)
+    return PlateSolution(wcs, (H, W), "nova.astrometry.net", rms, nm, mxy)
 
 
 def _corr_rms_bytes(wcs, corr_bytes, flip):

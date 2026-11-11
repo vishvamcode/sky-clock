@@ -24,7 +24,21 @@ def _settings(a):
                     window_end=parse_time(a.window[1]) if a.window else None, exposure_s=a.exposure,
                     exposure_max_s=a.exposure_max, tracking=a.tracking, h_km=a.height / 1000.0,
                     sun_max_alt_deg=None if a.no_sun_check else -3.0, region=region,
-                    max_solutions=a.max_solutions, up_marks=_up_marks(a))
+                    max_solutions=a.max_solutions, up_marks=_up_marks(a), body_marks=_body_marks(a),
+                    auto_bodies=a.find_planets,
+                    date_start=parse_time(a.date_window[0]) if a.date_window else None,
+                    date_end=parse_time(a.date_window[1]) if a.date_window else None)
+
+
+def _body_marks(a):
+    from .bodies import BODIES, BodyMark
+    out = []
+    for e in a.body or []:
+        p = e.split(",")
+        if len(p) not in (2, 3) or (len(p) == 3 and p[2].strip().lower() not in BODIES):
+            sys.exit(f"--body needs X,Y or X,Y,NAME with NAME one of {', '.join(BODIES)}")
+        out.append(BodyMark(float(p[0]), float(p[1]), p[2].strip().lower() if len(p) == 3 else None))
+    return out
 
 
 def _up_marks(a):
@@ -54,10 +68,13 @@ def cmd_analyze(a):
             s.lat, s.lon = h["lat"], h["lon"]
         s.exposure_s = s.exposure_s or h.get("exposure_s")
         print(f"EXIF hints used: { {k: str(v) for k, v in h.items()} }", file=sys.stderr)
-    when = s.time or s.window_start
     cat_bytes = Path(a.catalog_file).read_bytes() if a.catalog_file else None
-    catalog = load_catalog(a.catalog, when, cat_bytes, a.catalog_file or "file")
-    print(f"catalogue: {catalog.source}, {len(catalog)} LEO objects", file=sys.stderr)
+    loaded = {}
+
+    def catalog(when):  # loaded once the epoch is known (it may come from the Moon/planet date)
+        loaded["c"] = load_catalog(a.catalog, when, cat_bytes, a.catalog_file or "file")
+        print(f"catalogue: {loaded['c'].source}, {len(loaded['c'])} LEO objects", file=sys.stderr)
+        return loaded["c"]
     wcs_bytes = Path(a.wcs).read_bytes() if a.wcs else None
     method = "wcs" if a.wcs else a.plate
     edits = {int(i): False for i in a.disable.split(",")} if a.disable else None
@@ -78,7 +95,7 @@ def cmd_analyze(a):
     if res.solutions:
         from .identify import predicted_in_view
         s0 = res.solutions[0]
-        pred = predicted_in_view(catalog, res.epoch, s0.lat, s0.lon, res.epoch.seconds_from(s0.t_mid), out["plate"],
+        pred = predicted_in_view(loaded["c"], res.epoch, s0.lat, s0.lon, res.epoch.seconds_from(s0.t_mid), out["plate"],
                                  s.h_km, T=s0.exposure_s, tracking=s.tracking)
     im = report.annotate(out["display"], out["detection"].streaks, res.solutions[0] if res.solutions else None, pred)
     im.save(od / "annotated.png")
@@ -188,6 +205,13 @@ def main(argv=None):
     an.add_argument("--horizon", metavar="X,Y;X,Y;...", help="3+ points on a level sea/plain horizon, pixels")
     an.add_argument("--horizon-height", type=float, default=2.0, help="eye height above that horizon, metres")
     an.add_argument("--level", action="store_true", help="camera was level (no roll): weak extra constraint")
+    an.add_argument("--body", action="append", metavar="X,Y[,NAME]",
+                    help="the Moon or a planet in the photo, in pixels (NAME: moon, venus, jupiter, mars, saturn, "
+                         "mercury; omit to try all planets); repeat for each")
+    an.add_argument("--find-planets", action="store_true",
+                    help="look for planets among the brightest objects the plate solver did not match to stars")
+    an.add_argument("--date-window", nargs=2, metavar=("START", "END"),
+                    help="where to look for the Moon/planet date (default 2000-01-01 to now)")
     an.add_argument("--out", default="skyclock_out")
     an.set_defaults(func=cmd_analyze)
 

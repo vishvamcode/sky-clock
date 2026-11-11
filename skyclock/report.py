@@ -22,7 +22,12 @@ def _font(size):
     return ImageFont.load_default()
 
 
-def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000, up_marks=None):
+def _fmt_s(s):
+    from .bodies import _fmt_dt
+    return _fmt_dt(s)
+
+
+def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000, up_marks=None, body_marks=None):
     """Draw detected streaks (numbered), their identifications, predicted tracks and marked verticals."""
     im = Image.fromarray(display_rgb)
     W, H = im.size
@@ -71,6 +76,11 @@ def annotate(display_rgb, streaks, solution=None, predicted=None, max_side=2000,
         for x, y in up_marks.horizon:
             r = 2 * lw
             d.ellipse([x * f - r, y * f - r, x * f + r, y * f + r], outline="#00e5ff", width=lw)
+    for b in body_marks or []:
+        r = 8 * lw
+        d.ellipse([b.x * f - r, b.y * f - r, b.x * f + r, b.y * f + r], outline="#ff9f1c", width=lw)
+        d.text((b.x * f + r + 2, b.y * f - r), (b.name or "planet?").title(), fill="#ff9f1c", font=font,
+               stroke_width=2, stroke_fill="black")
     return im
 
 
@@ -182,6 +192,13 @@ def summary_markdown(result, plate_summary=None):
             L.append(f"  - unexplained streaks: {', '.join('#' + str(u) for u in s.unmatched)}")
         for n in s.notes:
             L.append(f"  - {n}")
+    ds = getattr(result, "dates", None)
+    if ds:
+        L.append("")
+        L.append("**Date from the Moon/planets:**")
+        for d in ds[:5]:
+            L.append(f"- {d['time_utc'][:16].replace('T', ' ')} UTC +-{_fmt_s(d['sigma_t_s'])} "
+                     f"({', '.join(d['bodies'])})")
     z = getattr(result, "zenith", None)
     if z:
         L.append("")

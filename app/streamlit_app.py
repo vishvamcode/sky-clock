@@ -27,6 +27,7 @@ from skyclock.pipeline import CATALOG_CHOICES, load_catalog, plate_hint, plate_s
 from skyclock.platesolve import local_solver_available  # noqa: E402
 from skyclock.solve import MODES, Settings, analyze  # noqa: E402
 from skyclock.zenith import UpMarks  # noqa: E402
+from skyclock.bodies import BODIES, BodyMark  # noqa: E402
 
 try:  # optional: click on the photo to mark lines (pip install streamlit-image-coordinates)
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -178,21 +179,27 @@ if hints:
 # ------------------------------------------------------------------ which way is up (optional)
 def _marks_ui(img_key):
     """Vertical edges / level horizon marked on the photo -> UpMarks (or None)."""
-    vk, hk, ck = "vert_" + img_key, "hor_" + img_key, "click_" + img_key
+    vk, hk, ck, bk = "vert_" + img_key, "hor_" + img_key, "click_" + img_key, "bod_" + img_key
     st.session_state.setdefault(vk, [])
     st.session_state.setdefault(hk, [])
-    with st.expander("Optional: mark which way is up (vertical edges or a sea horizon)", expanded=False):
+    st.session_state.setdefault(bk, [])
+    with st.expander("Optional: mark vertical edges, a sea horizon, the Moon or planets", expanded=False):
         st.markdown(
             "If the photo shows **truly vertical** things (a building corner, a lamp post, a door frame) or a **level "
             "sea horizon**, mark them. Together with the stars they give the latitude, and the longitude once the "
             "time is known. With satellites they turn a single streak's line of places into a point. Mark edges as "
-            "long as possible; avoid trees and anything that may lean.")
+            "long as possible; avoid trees and anything that may lean.\n\n"
+            "The **Moon or a planet** dates the photo: they move against the stars (the Moon about its own width "
+            "per hour, Venus and Mars about a degree a day, Jupiter and Saturn slower). Not sure which planet? "
+            "Leave the name as 'any planet'.")
         H, W = gray.shape
         cur = UpMarks(verticals=st.session_state[vk], horizon=st.session_state[hk])
+        curb = [BodyMark(r[0], r[1], None if r[2] == "any planet" else r[2]) for r in st.session_state[bk]]
         if streamlit_image_coordinates is not None:
-            what = st.radio("A click on the photo adds", ["vertical edge (click both ends)", "horizon point"],
+            what = st.radio("A click on the photo adds", ["vertical edge (click both ends)", "horizon point",
+                                                          "Moon / planet"],
                             horizontal=True, key="what_" + img_key)
-            prev = report.annotate(disp, det.streaks, up_marks=cur, max_side=1200)
+            prev = report.annotate(disp, det.streaks, up_marks=cur, body_marks=curb, max_side=1200)
             click = streamlit_image_coordinates(prev, key="img_" + img_key)
             if click and click.get("unix_time") != st.session_state.get(ck + "_t"):
                 st.session_state[ck + "_t"] = click.get("unix_time")
@@ -200,6 +207,8 @@ def _marks_ui(img_key):
                 x, y = round(click["x"] * f, 1), round(click["y"] * f, 1)
                 if what.startswith("horizon"):
                     st.session_state[hk].append([x, y])
+                elif what.startswith("Moon"):
+                    st.session_state[bk].append([x, y, "any planet"])
                 else:
                     pend = st.session_state.get(ck)
                     if pend is None:
@@ -220,22 +229,32 @@ def _marks_ui(img_key):
         hed = c2.data_editor(hdf, num_rows="dynamic", key=f"hed_{img_key}_{len(hdf)}", hide_index=True)
         st.session_state[vk] = [list(map(float, r)) for r in ved.dropna().to_numpy()]
         st.session_state[hk] = [list(map(float, r)) for r in hed.dropna().to_numpy()]
+        st.caption("Moon / planets (pick the name; 'any planet' tries all of them)")
+        bdf = pd.DataFrame(st.session_state[bk] or [], columns=["x", "y", "name"])
+        bed = st.data_editor(bdf, num_rows="dynamic", key=f"bed_{img_key}_{len(bdf)}", hide_index=True,
+                             column_config={"name": st.column_config.SelectboxColumn(
+                                 options=["any planet"] + list(BODIES), default="any planet")})
+        st.session_state[bk] = [[float(r[0]), float(r[1]), r[2] or "any planet"]
+                                for r in bed.dropna(subset=["x", "y"]).to_numpy()]
+        auto = st.checkbox("Also look for planets automatically among the brightest objects", False,
+                           key="auto_" + img_key)
         c1, c2, c3 = st.columns(3)
         level = c1.checkbox("Camera was level (no tilt sideways)", False, key="lvl_" + img_key)
         hh = c2.number_input("Eye height above the horizon (m)", 0.0, 9000.0, 2.0, key="hh_" + img_key)
         if c3.button("Clear marks", key="clr_" + img_key):
-            st.session_state[vk], st.session_state[hk], st.session_state[ck] = [], [], None
+            st.session_state[vk], st.session_state[hk], st.session_state[ck], st.session_state[bk] = [], [], None, []
             st.rerun()
     m = UpMarks(verticals=st.session_state[vk], horizon=st.session_state[hk], horizon_height_m=hh,
                 camera_level=level)
+    bodies = [BodyMark(r[0], r[1], None if r[2] == "any planet" else r[2]) for r in st.session_state[bk]]
     if m.empty():
-        return None
+        return None, bodies, auto
     if len(m.verticals) + int(m.camera_level) < 2 and len(m.horizon) < 3:
         st.caption("Up marks: one vertical edge alone is not enough; mark at least two (or 3 horizon points).")
-    return m
+    return m, bodies, auto
 
 
-up_marks = _marks_ui(img_key)
+up_marks, body_marks, auto_bodies = _marks_ui(img_key)
 
 # ------------------------------------------------------------------ question
 st.header("2. What do you want to know?")
@@ -245,7 +264,18 @@ if demo_truth is not None:
     d_time = datetime(2026, 11, 10, 16, 10, tzinfo=timezone.utc)
 d_lat = hints.get("lat", 59.33 if demo_truth is not None else 0.0)
 d_lon = hints.get("lon", 18.06 if demo_truth is not None else 0.0)
-s = Settings(mode=mode, tracking=tracking, h_km=h_m / 1000.0, up_marks=up_marks)
+s = Settings(mode=mode, tracking=tracking, h_km=h_m / 1000.0, up_marks=up_marks, body_marks=body_marks,
+             auto_bodies=auto_bodies)
+use_body_window = False
+if mode == "date":
+    st.caption("Where to look for the date. A long window is fine: the planets are searched in seconds.")
+    c1, c2 = st.columns(2)
+    s.date_start = _dt_input("From", datetime(2000, 1, 1, tzinfo=timezone.utc), "ds")
+    s.date_end = _dt_input("To", datetime.now(timezone.utc).replace(microsecond=0), "de")
+    if st.checkbox("I know the place (makes the Moon far more precise)", False):
+        c1, c2 = st.columns(2)
+        s.lat = c1.number_input("Latitude (deg)", -90.0, 90.0, float(d_lat), format="%.4f", key="dlat")
+        s.lon = c2.number_input("Longitude (deg)", -180.0, 180.0, float(d_lon), format="%.4f", key="dlon")
 if mode in ("identify", "check", "place"):
     s.time = _dt_input("Exposure start" + (" (claimed)" if mode == "check" else " (approximate)"), d_time, "t")
     s.sigma_time_s = st.number_input("Time uncertainty, 1 sigma (s)", 0.1, 3600.0,
@@ -256,7 +286,9 @@ if mode in ("identify", "check", "time"):
     s.lon = c2.number_input("Longitude (deg, E positive)", -180.0, 180.0, float(d_lon), format="%.5f")
     s.sigma_loc_km = c3.number_input("Place uncertainty, 1 sigma (km)", 0.01, 500.0,
                                      1.0 if mode == "check" else 10.0)
-if mode in ("time", "blind"):
+if mode in ("time", "blind") and body_marks:
+    use_body_window = st.checkbox("Take the search window from the Moon/planet date", True)
+if mode in ("time", "blind") and not use_body_window:
     st.caption("Search window. Longer windows take longer (about a minute per 6 h with ~10,000 satellites).")
     base = d_time or datetime.now(timezone.utc).replace(microsecond=0)
     s.window_start = _dt_input("Window start", base - timedelta(hours=1), "ws")
@@ -285,21 +317,17 @@ if mode in ("blind", "place", "time"):
                           "verifying, and I will not use the result to locate a private person.")
 
 go = st.button("Analyse", type="primary",
-               disabled=not consent or not (any(x.enabled for x in det.streaks) or up_marks is not None))
+               disabled=not consent or not (any(x.enabled for x in det.streaks) or up_marks is not None
+                                            or body_marks or (mode == "date" and auto_bodies)))
 if not go and "last" not in st.session_state:
     st.stop()
 
 # ------------------------------------------------------------------ run
 if go:
-    when = s.time or s.window_start
     if demo_truth is not None and cat_kind != "synthetic":
         st.info("Demo photo: using the synthetic catalogue it was made with.")
         cat_kind = "synthetic"
     try:
-        with st.spinner("Loading satellite catalogue..."):
-            fh = hashlib.sha1(cat_file).hexdigest() if cat_file else None
-            when_key = when.strftime("%Y-%m-%dT%H") if cat_kind in ("spacetrack", "github-archive") else None
-            catalog = _catalog(cat_kind, when_key, fh, cat_file, st_user, st_pw)
         with st.spinner("Plate solving..."):
             wbytes = wcs_file if plate_method == "wcs" else None
             method = plate_method
@@ -310,9 +338,28 @@ if go:
         if plate is None:
             st.error("Plate solving failed: the stars could not be matched to a catalogue. Try a WCS file.")
             st.stop()
+        if use_body_window:
+            from dataclasses import replace as _replace
+            from skyclock.solve import date_from_bodies, window_from_dates
+            with st.spinner("Dating from the Moon/planets..."):
+                dts, _ = date_from_bodies(plate, _replace(s, auto_bodies=False), det)
+            if not dts:
+                st.error("The marked Moon/planets give no date in 2000 to now: check the names, or set the window.")
+                st.stop()
+            s = window_from_dates(s, dts)
+            st.info(f"Search window from the Moon/planet date: {s.window_start:%Y-%m-%d %H:%M} to "
+                    f"{s.window_end:%H:%M} UTC.")
+        catalog = None
+        if mode != "date":
+            when = s.time or s.window_start
+            with st.spinner("Loading satellite catalogue..."):
+                fh = hashlib.sha1(cat_file).hexdigest() if cat_file else None
+                when_key = when.strftime("%Y-%m-%dT%H") if cat_kind in ("spacetrack", "github-archive") else None
+                catalog = _catalog(cat_kind, when_key, fh, cat_file, st_user, st_pw)
         obs = build_obs(det.streaks, plate, s.epoch())
         bar = st.progress(0.0, "Analysing...")
-        res = analyze(obs, plate, catalog, s, progress=lambda f, m: bar.progress(float(min(max(f, 0), 1)), m))
+        res = analyze(obs, plate, catalog, s, progress=lambda f, m: bar.progress(float(min(max(f, 0), 1)), m),
+                      det=det)
         bar.empty()
         pred = None
         if res.solutions:
@@ -337,6 +384,11 @@ if res.verdict:
     box(f"**{v['status'].upper()}**: {v['text']}")
 for n in res.notes:
     st.warning(n)
+if res.dates:
+    st.subheader("Date from the Moon and planets")
+    st.dataframe(pd.DataFrame([dict(rank=i + 1, time_utc=d["time_utc"][:16].replace("T", " "),
+                                    plus_minus=report._fmt_s(d["sigma_t_s"]), bodies=", ".join(d["bodies"]))
+                               for i, d in enumerate(res.dates[:10])]), hide_index=True)
 if res.zenith and "lat" in res.zenith and not res.solutions:
     z = res.zenith
     z1, z2 = st.columns(2)
@@ -371,7 +423,8 @@ if res.solutions:
 c1, c2 = st.columns([3, 2])
 with c1:
     sol0 = res.solutions[0] if res.solutions else None
-    st.image(report.annotate(disp, det.streaks, sol0, last["pred"], up_marks=up_marks), use_container_width=True,
+    st.image(report.annotate(disp, det.streaks, sol0, last["pred"], up_marks=up_marks,
+                             body_marks=body_marks), use_container_width=True,
              caption="Coloured: detected streaks with identifications. Yellow: predicted satellite tracks for "
                      "the best solution.")
 with c2:
