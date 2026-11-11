@@ -23,7 +23,7 @@ from skyclock.detect import detect  # noqa: E402
 from skyclock.identify import predicted_in_view  # noqa: E402
 from skyclock.imageio import exif_hints, load_image  # noqa: E402
 from skyclock.observations import build as build_obs  # noqa: E402
-from skyclock.pipeline import CATALOG_CHOICES, load_catalog, plate_solve  # noqa: E402
+from skyclock.pipeline import CATALOG_CHOICES, load_catalog, plate_hint, plate_solve  # noqa: E402
 from skyclock.platesolve import local_solver_available  # noqa: E402
 from skyclock.solve import MODES, Settings, analyze  # noqa: E402
 
@@ -88,6 +88,7 @@ with st.sidebar:
     st.info(ETHICS)
     st.subheader("Satellite catalogue")
     short = {"celestrak": "CelesTrak, current (all active)", "celestrak-starlink": "CelesTrak, Starlink only",
+             "github-archive": "Past orbits, public archive (no account)",
              "spacetrack": "Space-Track history (account)", "file": "My own TLE/OMM file",
              "synthetic": "Synthetic (demo only)"}
     cat_kind = st.selectbox("Source", list(CATALOG_CHOICES), format_func=short.get)
@@ -228,14 +229,15 @@ if go:
     try:
         with st.spinner("Loading satellite catalogue..."):
             fh = hashlib.sha1(cat_file).hexdigest() if cat_file else None
-            when_key = when.strftime("%Y-%m-%d") if cat_kind == "spacetrack" else None
+            when_key = when.strftime("%Y-%m-%dT%H") if cat_kind in ("spacetrack", "github-archive") else None
             catalog = _catalog(cat_kind, when_key, fh, cat_file, st_user, st_pw)
         with st.spinner("Plate solving..."):
             wbytes = wcs_file if plate_method == "wcs" else None
             method = plate_method
             if method == "local" and not local_solver_available() and demo_wcs is not None:
                 method, wbytes = "wcs", demo_wcs
-            plate = plate_solve(det, gray, method, nova_key, wbytes)
+            plate = plate_solve(det, gray, method, nova_key, wbytes, hint=plate_hint(s),
+                                fov_deg=exif_hints(exif).get("fov_x_deg"))
         if plate is None:
             st.error("Plate solving failed: the stars could not be matched to a catalogue. Try a WCS file.")
             st.stop()

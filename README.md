@@ -73,7 +73,9 @@ run every mode and see the error against the known truth.
    are fairly sure within a minute. If EXIF has a time, place or exposure, the app shows it and fills it
    in, but the EXIF clock is only used if you leave it in.
 4. **Catalogue** (sidebar). For photos from the last ~2 days, *CelesTrak, current* is fine. For older
-   photos use *Space-Track history* (free account), because orbits drift by kilometres per day.
+   photos use *Past orbits, public archive* (no account; covers 2021-01-01 to 2023-12-28 for all
+   satellites and 2026-10-13 onward for Starlink, from volunteer GitHub archives of CelesTrak files) or
+   *Space-Track history* (free account, any date), because orbits drift by kilometres per day.
 5. **Analyse.** You get the place, the exposure start (UTC), the exposure length, which satellite made
    each streak, the fit quality, a map with the 2-sigma ellipse, alternatives (aliases), and downloads
    (JSON and annotated PNG).
@@ -147,12 +149,17 @@ into the app for that session only; they are never written to files or logs.
 
 ## How it works
 
-1. **Detection** (`skyclock/detect.py`): robust background, significance mask, components split into
+1. **Detection** (`skyclock/detect.py`): a sky mask first (trees, roofs and ground are darker than the
+   nearby sky or textured; stars and streaks there are ignored, and a streak end at the tree line is
+   not used for timing), robust background from sky pixels only, significance mask, components split into
    stars (compact) and streak fragments (elongated); collinear fragments are merged across stars and
    gaps; each streak is refined with cross-track profiles every 2 px (sub-pixel centre line, half-maximum
-   endpoints, flags for frame-clipped and dashed streaks).
+   endpoints, flags for frame-clipped, hidden, fading and dashed ends; a fading end, e.g. a satellite
+   entering Earth's shadow, is not an exposure boundary).
 2. **Plate solving** (`skyclock/platesolve.py`): our own star list goes to astrometry.net, so the WCS
-   matches our pixel convention exactly; RMS from the matched stars feeds the error model.
+   matches our pixel convention exactly; RMS from the matched stars feeds the error model. Field widths
+   are tried in bands (fisheye/wide, normal, tele; EXIF focal length first if present), near the zenith
+   when the time and place are roughly known, so a 97-degree field solves in seconds.
 3. **Measurements** (`skyclock/observations.py`): streak samples become sky directions; annual
    aberration is removed so they can be compared with satellite positions; each streak gets a great
    circle, an arc and uncertainties.
@@ -160,7 +167,8 @@ into the app for that session only; they are never written to files or logs.
    orientation (fixed tripod; tracking mounts supported), and per-streak nuisance parameters for
    catalogue errors (0.28 s along-track, 0.5 km cross-track) plus a shared 0.3 s timing bias.
    Cross-track residuals pin down *where* you are; the streak endpoints (start and end of the exposure)
-   pin down *when*.
+   pin down *when*. Ends that are not exposure boundaries (cut off, hidden, fading) still have to lie
+   inside the predicted exposure track, so a satellite too slow to draw the visible streak is rejected.
 5. **Search** (`skyclock/search.py`): a streak's great circle and the observer define a plane that must
    contain the satellite's velocity. Roots of that condition over the search window give candidate
    (satellite, time) pairs; each becomes a short curve of possible observer positions on the ground; curves
@@ -189,7 +197,14 @@ Background, error budget, novelty search and the original feasibility study: `do
   verdict forced to "consistent", Earth rotation rate +1 %, endpoints ignored); each one made at least
   one test fail.
 
-**What has not been tested:** real photos. The simulator and the solver share the propagation code, so
+**First real photo (2026-11-11):** a 16 mm, 30 s backyard shot with one Starlink streak, captioned
+17 Aug 2023 21:07 CDT, Springfield, Missouri (time, place and exposure taken from a public caption; not
+verified). Detection, sky mask and blind plate solving now work on it without manual help (1 streak,
+159 stars, 1.7 px plate RMS, 7 s solve). No catalogued satellite fits the caption time; with the place
+fixed, STARLINK-3921 at about 03:08 UTC fits if the exposure was 45 s or longer, and nothing fits a 30 s
+exposure. One streak cannot settle this, so it is not a validation.
+
+**What has not been tested:** real photos with a known time and place. The simulator and the solver share the propagation code, so
 the simulations test internal consistency and statistics, not agreement with the real sky. The
 catalogue error model (0.28 s, 0.5 km, shared 0.3 s) is an estimate for public GP data and needs
 calibration.

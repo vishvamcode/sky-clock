@@ -91,3 +91,24 @@ def test_uncertainty_is_calibrated_roughly(scene, constellation):
     sig_km = np.hypot(sol.sigma_east_km, sol.sigma_north_km)
     assert km < 4 * sig_km + 0.2
     assert abs(s) < 4 * sol.sigma_t_s
+
+
+def test_untrusted_ends_still_bound_the_speed(scene, constellation):
+    """Both ends cut off (trees, frame edge): the visible arc must still fit inside the exposure, so a trial
+    exposure too short for the satellite to cover it must fit worse. Without the one-sided coverage term the
+    cross-track residuals do not depend on the exposure length and this test fails."""
+    from skyclock.fit import Fitter
+    res = _run(scene, constellation, mode="identify", time=WHEN, lat=LAT, lon=LON, sigma_time_s=2, sigma_loc_km=1)
+    sol = res.solutions[0]
+    m = sol.matches[0]
+    s = SV.Settings(mode="identify", time=WHEN, lat=LAT, lon=LON)
+    obs = O.build(scene["det"].streaks, scene["plate"], s.epoch())
+    ob = next(o for o in obs if o.id == m["streak"])
+    ob.clipped = (True, True)
+    k = int(np.where(constellation.norad == m["norad"])[0][0])
+    f = Fitter([ob], [k], constellation, s.epoch(), scale_rad=scene["plate"].pixel_scale_rad())
+    x = np.array([sol.lat, sol.lon, s.epoch().seconds_from(sol.t_mid), sol.exposure_s, 0.0, 0.0])
+    chi_ok = np.sum(f.residuals(x) ** 2)
+    x[3] = 0.4 * sol.exposure_s
+    chi_short = np.sum(f.residuals(x) ** 2)
+    assert chi_short > chi_ok + 25

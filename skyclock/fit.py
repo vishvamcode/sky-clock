@@ -7,7 +7,8 @@ satellite's range plus plate-solution systematics).
 
 Residuals are computed per streak in a gnomonic tangent plane centred on the observed arc:
   * cross-track: observed centre-line samples vs predicted track,
-  * along-track: trusted (unclipped, undashed) endpoints vs predicted exposure start/end.
+  * along-track: trusted (unclipped, undashed) endpoints vs predicted exposure start/end; untrusted
+    endpoints only have to lie inside the predicted exposure track (one-sided).
 
 Camera frame: a fixed tripod is Earth-fixed, so predicted directions are rotated into the sky frame
 at mid-exposure; on a tracking mount the camera follows the stars, so each instant uses its own
@@ -127,8 +128,10 @@ class FitResult:
 
 
 class Fitter:
-    def __init__(self, obs_list, sat_idx, catalog, epoch: Epoch, h_km=0.0, tracking=False, scale_rad=None):
+    def __init__(self, obs_list, sat_idx, catalog, epoch: Epoch, h_km=0.0, tracking=False, scale_rad=None,
+                 T_max=3600.0):
         self.obs = obs_list
+        self.T_max = float(T_max)
         self.sat_idx = [int(k) for k in sat_idx]
         self.catalog, self.epoch, self.h, self.tracking = catalog, epoch, h_km, tracking
         self.m = len(obs_list)
@@ -136,8 +139,8 @@ class Fitter:
         self.scale = scale_rad
         self._obs_xy = [gnomonic(ob.g_samples, ob) for ob in obs_list]
         self._obs_end_x = [gnomonic(ob.g_ends, ob)[0] for ob in obs_list]
-        self.u = np.linspace(-1.5, 1.5, 61)  # includes +-0.5 (exposure start/end) exactly
-        self.i_start, self.i_end = 20, 40
+        self.u = np.linspace(-1.0, 1.0, 61)  # track sampling grid, in units of the half-span
+        self._span = [0.0] * self.m  # per streak: half-span (s) needed to cover the observed samples
 
     def track(self, k, tc):
         if k not in self.tracks:
@@ -159,21 +162,39 @@ class Fitter:
         o = geodetic_to_itrs(lat, lon, self.h)
         out, per = [], []
         for i, (ob, k) in enumerate(zip(self.obs, self.sat_idx)):
-            tau = t + dts[i] + T * self.u
-            r = self.track(k, t)(tau)
-            rel = r - o
-            rho = float(np.linalg.norm(rel[30]))
-            d = camera_dirs(self.epoch, unit(rel), tau, t, self.tracking)
-            xp, yp = gnomonic(d, ob)
-            order = np.argsort(xp)
+            # sample the predicted track over a span that covers the whole observed streak, whatever the
+            # trial exposure T (otherwise a short T would extrapolate the track and bias T upwards)
             xo, yo = self._obs_xy[i]
-            yc = _interp_extrap(xo, xp[order], yp[order])
+            for _ in range(3):
+                Hs = max(0.75 * T, self._span[i], 1.0)
+                tau = t + dts[i] + np.concatenate([Hs * self.u, [-T / 2, T / 2]])
+                r = self.track(k, t)(tau)
+                rel = r - o
+                d = camera_dirs(self.epoch, unit(rel), tau, t, self.tracking)
+                xp, yp = gnomonic(d, ob)
+                xg, yg = xp[:-2], yp[:-2]
+                margin = 0.05 * (xo.max() - xo.min() + 1e-9)
+                if xg.min() <= xo.min() - margin and xg.max() >= xo.max() + margin:
+                    break
+                rate = (xg.max() - xg.min()) / (2 * Hs) + 1e-12  # gnomonic units per second
+                xc = xg[len(xg) // 2]
+                need = max(abs(xo.min() - margin - xc), abs(xo.max() + margin - xc)) / rate
+                self._span[i] = min(1.3 * need, 3600.0)
+            rho = float(np.linalg.norm(rel[len(self.u) // 2]))
+            order = np.argsort(xg)
+            yc = _interp_extrap(xo, xg[order], yg[order])
             rc = (yo - yc - cs[i]) / ob.sigma_rad
-            xs, xe = xp[self.i_start], xp[self.i_end]
+            xs, xe = xp[-2], xp[-1]
             xo1, xo2 = self._obs_end_x[i]
             same = (xe - xs) * (xo2 - xo1) >= 0
             pred = (xs, xe) if same else (xe, xs)
             ra = [(xo_ - xp_) / ob.sigma_end_rad for xo_, xp_, ok in zip((xo1, xo2), pred, ob.trusted_ends) if ok]
+            # an untrusted end (frame edge, trees, fading, dashes) is not the exposure boundary, but the
+            # visible streak must still lie inside the predicted exposure track: a satellite too slow to
+            # cover the visible arc within the exposure is penalised (one-sided)
+            lo, hi = min(xs, xe), max(xs, xe)
+            ra += [(max(lo - xo_, 0.0) + max(xo_ - hi, 0.0)) / ob.sigma_end_rad
+                   for xo_, ok in zip((xo1, xo2), ob.trusted_ends) if not ok]
             rpri = [dts[i] / SIG_DT, cs[i] / self.sigma_c(ob, rho)]
             seg = np.concatenate([rc, np.array(ra, float)])
             per.append(seg)
@@ -195,7 +216,7 @@ class Fitter:
         x_scale = np.concatenate([[0.01, 0.01, 0.5, 0.5], np.full(self.m, 0.2), np.full(self.m, 1e-5)])
         diff = np.concatenate([[1e-6, 1e-6, 1e-3, 1e-3], np.full(self.m, 1e-3), np.full(self.m, 1e-7)])
         lb = np.concatenate([[-90, -540, -np.inf, 0.05], np.full(2 * self.m, -np.inf)])
-        ub = np.concatenate([[90, 540, np.inf, 3600], np.full(2 * self.m, np.inf)])
+        ub = np.concatenate([[90, 540, np.inf, max(self.T_max, 0.1)], np.full(2 * self.m, np.inf)])
 
         def f(xf):
             x = x0.copy()

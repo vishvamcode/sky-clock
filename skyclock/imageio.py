@@ -125,6 +125,13 @@ def exif_hints(exif: dict) -> dict:
             hints["exposure_s"] = _num(exif["ExposureTime"])
     except (ValueError, ZeroDivisionError):
         pass
+    try:
+        f35 = exif.get("FocalLengthIn35mmFilm")
+        if f35 is not None and _num(f35) > 0:
+            import math
+            hints["fov_x_deg"] = math.degrees(2 * math.atan(18.0 / _num(f35)))
+    except (ValueError, ZeroDivisionError):
+        pass
     gps = exif.get("GPSInfo") or {}
     try:
         def dms(val):

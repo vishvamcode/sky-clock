@@ -5,6 +5,7 @@ Sources
 * CelesTrak GP (OMM JSON; no account): ``fetch_celestrak("active")``
 * CelesTrak SupGP for Starlink (derived from SpaceX ephemerides; no account): ``fetch_supgp("starlink")``
 * Space-Track GP history for old photos (free account): ``fetch_spacetrack_history(...)``
+* Public GitHub archives of CelesTrak snapshots (no account): ``fetch_github_archive(when)``
 * Local TLE / 3LE / OMM JSON / OMM CSV files: ``load_file(path)``
 * Synthetic Walker constellations for tests and demos: ``synthetic_constellation(...)``
 
@@ -253,6 +254,91 @@ def fetch_spacetrack_history(user, password, when: datetime, days_before=3.0, da
         if nid not in best or score < best[nid][0]:
             best[nid] = (score, rec)
     return _from_records([v[1] for v in best.values()], source=f"spacetrack-history:{d1}..{d2}")
+
+
+# ------------------------------------------------------------------ public GitHub archives
+# Volunteer-run repositories that commit CelesTrak element files on a schedule; each commit is a snapshot.
+# Coverage below was checked on 2026-11-10; snapshots are CelesTrak data (public), not Space-Track data.
+GITHUB_ARCHIVES = [
+    dict(repo="OndroNR/tle-archive", path="TLEs/active.txt", start="2021-01-01", end="2023-12-28",
+         note="all active satellites, about every 2 h"),
+    dict(repo="crb0229/overhead", path="data/starlink.tle", start="2026-10-13", end=None,
+         note="Starlink only, daily"),
+]
+
+
+def github_archive_for(when: datetime):
+    """The archive whose coverage includes ``when``, or None."""
+    d = when.astimezone(timezone.utc).strftime("%Y-%m-%d")
+    for a in GITHUB_ARCHIVES:
+        if a["start"] <= d and (a["end"] is None or d <= a["end"]):
+            return a
+    return None
+
+
+def _archive_commit_api(repo, path, until: datetime):
+    import requests
+    url = f"https://api.github.com/repos/{repo}/commits"
+    r = requests.get(url, params={"path": path, "until": until.strftime("%Y-%m-%dT%H:%M:%SZ"), "per_page": 1},
+                     headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"}, timeout=60)
+    if r.status_code != 200 or not r.json():
+        raise RuntimeError(f"GitHub API: HTTP {r.status_code}")
+    c = r.json()[0]
+    return c["sha"], c["commit"]["committer"]["date"]
+
+
+def _archive_commit_git(repo, path, until: datetime):
+    """Fallback without the GitHub API (rate limits, proxies): a metadata-only git clone, cached."""
+    import subprocess
+    d = CACHE_DIR / "git" / repo.replace("/", "__")
+    if not (d / ".git").exists():
+        d.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", "--quiet", "--filter=blob:none", "--no-checkout",
+                        f"https://github.com/{repo}.git", str(d)], check=True, timeout=900)
+    else:
+        subprocess.run(["git", "-C", str(d), "fetch", "--quiet"], check=False, timeout=900)
+    out = subprocess.run(["git", "-C", str(d), "log", "-1", "--format=%H %cI", f"--until={until.isoformat()}",
+                          "origin/HEAD", "--", path], capture_output=True, text=True, check=True).stdout.split()
+    if not out:
+        raise RuntimeError("no snapshot before that time")
+    text = subprocess.run(["git", "-C", str(d), "show", f"{out[0]}:{path}"], capture_output=True, text=True,
+                          check=True).stdout
+    return out[0], out[1], text
+
+
+def fetch_github_archive(when: datetime, after_h=3.0) -> Catalog:
+    """Element snapshot close to ``when`` from a public GitHub archive of CelesTrak files.
+
+    Uses the newest snapshot committed before ``when + after_h`` hours: CelesTrak's element epochs are
+    usually several hours older than the file, so a snapshot shortly after the photo is the closest."""
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    a = github_archive_for(when)
+    if a is None:
+        cov = "; ".join(f"{x['repo']}: {x['start']} to {x['end'] or 'now'}" for x in GITHUB_ARCHIVES)
+        raise RuntimeError(f"no public GitHub archive covers {when:%Y-%m-%d} ({cov}); use Space-Track history")
+    until = when + timedelta(hours=after_h)
+    name = f"gharchive_{a['repo'].replace('/', '__')}_{until:%Y%m%dT%H}.tle"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache = CACHE_DIR / name
+    if cache.exists():
+        text, label = cache.read_text(), cache.read_text().split("\n", 1)[0]
+    else:
+        try:
+            import requests
+            sha, date = _archive_commit_api(a["repo"], a["path"], until)
+            r = requests.get(f"https://raw.githubusercontent.com/{a['repo']}/{sha}/{a['path']}",
+                             headers={"User-Agent": USER_AGENT}, timeout=300)
+            if r.status_code != 200:
+                raise RuntimeError(f"HTTP {r.status_code}")
+            text = r.text
+        except Exception:
+            sha, date, text = _archive_commit_git(a["repo"], a["path"], until)
+        label = f"# {a['repo']} {sha[:10]} committed {date}"
+        cache.write_text(label + "\n" + text)
+    cat = load_text(text, source=f"github:{a['repo']}")
+    cat.source = f"github:{a['repo']} ({label.split('committed')[-1].strip()})"
+    return cat
 
 
 # ------------------------------------------------------------------ synthetic
