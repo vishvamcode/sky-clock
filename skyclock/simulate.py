@@ -222,6 +222,32 @@ def simulate_photo(catalog: Catalog, when: datetime, lat: float, lon: float, h_k
     return noisy, wcs, truth
 
 
+class PerturbedCatalog:
+    """Renders satellites where a real catalogue would put them *wrongly*: each satellite is moved along its
+    track by dt_i + a shared offset (s) and across it by dx_i (km). The solver then analyses the photo with
+    the unperturbed catalogue, as with real public elements. Default sizes follow the error model in fit.py.
+    """
+
+    def __init__(self, base, sig_dt=0.28, sig_shared_dt=0.30, sig_cross_km=0.5, seed=0):
+        rng = np.random.default_rng(seed)
+        n = len(base)
+        self.base, self.names, self.norad, self.source = base, base.names, base.norad, base.source + "+errors"
+        self.shared_dt = float(rng.normal(0, sig_shared_dt))
+        self.dt = rng.normal(0, sig_dt, n) + self.shared_dt
+        self.dx = rng.normal(0, sig_cross_km, n)
+
+    def __len__(self):
+        return len(self.base)
+
+    def propagate(self, epoch, secs, idx=None):
+        R, V, ok = self.base.propagate(epoch, secs, idx)
+        sel = np.arange(len(self.base)) if idx is None else np.asarray(idx, int)
+        dt, dx = self.dt[sel][:, None, None], self.dx[sel][:, None, None]
+        nrm = np.cross(R, V)
+        nrm = nrm / np.linalg.norm(nrm, axis=-1, keepdims=True)
+        return R + V * dt + nrm * dx, V, ok
+
+
 def save_outputs(prefix, image, wcs, truth):
     """Write <prefix>.png (16-bit), <prefix>.wcs (FITS header) and <prefix>.truth.json."""
     from PIL import Image

@@ -75,14 +75,24 @@ def motion_roots(obs_list, catalog, epoch: Epoch, t_lo, t_hi, step=10.0, chunk_t
             g = np.where(ok, g, np.nan)
             with np.errstate(invalid="ignore"):
                 sc = g[:, :-1] * g[:, 1:] < 0
+                # grazing: the velocity stays (almost) in the streak's plane over the whole step without
+                # changing sign - the observer is close to the satellite's orbital plane (near-overhead
+                # passes). A sign test alone misses these.
+                graze = ~sc & (np.abs(g[:, :-1]) < tols[i]) & (np.abs(g[:, 1:]) < tols[i])
             ni, ti = np.nonzero(sc)
-            if len(ni) == 0:
+            gi, gt = np.nonzero(graze)
+            if len(ni) == 0 and len(gi) == 0:
                 continue
             g0, g1 = g[ni, ti], g[ni, ti + 1]
             f = g0 / (g0 - g1)
             tr = tc[ti] + f * step
             slope = (g1 - g0) / step
             w = np.minimum(tols[i] / np.maximum(np.abs(slope), 1e-12), w_max)
+            if len(gi):  # one candidate per grazing step, at its middle, covering the step
+                ni, ti = np.concatenate([ni, gi]), np.concatenate([ti, gt])
+                f = np.concatenate([f, np.full(len(gi), 0.5)])
+                tr = np.concatenate([tr, tc[gt] + 0.5 * step])
+                w = np.concatenate([w, np.full(len(gi), 0.6 * step)])
             rr = r[ni, ti] + f[:, None] * (r[ni, ti + 1] - r[ni, ti])
             vv = v[ni, ti] + f[:, None] * (v[ni, ti + 1] - v[ni, ti])
             keep = np.ones(len(ni), bool)
