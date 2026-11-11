@@ -24,7 +24,17 @@ def _settings(a):
                     window_end=parse_time(a.window[1]) if a.window else None, exposure_s=a.exposure,
                     exposure_max_s=a.exposure_max, tracking=a.tracking, h_km=a.height / 1000.0,
                     sun_max_alt_deg=None if a.no_sun_check else -3.0, region=region,
-                    max_solutions=a.max_solutions)
+                    max_solutions=a.max_solutions, up_marks=_up_marks(a))
+
+
+def _up_marks(a):
+    from .zenith import UpMarks
+    v = [[float(x) for x in e.split(",")] for e in (a.vertical or [])]
+    if any(len(e) != 4 for e in v):
+        sys.exit("--vertical needs X1,Y1,X2,Y2 (pixels)")
+    hz = [[float(x) for x in p.split(",")] for p in a.horizon.split(";")] if a.horizon else []
+    m = UpMarks(verticals=v, horizon=hz, horizon_height_m=a.horizon_height, camera_level=a.level)
+    return None if m.empty() else m
 
 
 def cmd_analyze(a):
@@ -173,6 +183,11 @@ def main(argv=None):
     an.add_argument("--no-sun-check", action="store_true", help="allow solutions where the Sun is up")
     an.add_argument("--max-solutions", type=int, default=5)
     an.add_argument("--i-understand", action="store_true", help="required for blind mode (see ethics note)")
+    an.add_argument("--vertical", action="append", metavar="X1,Y1,X2,Y2",
+                    help="a truly vertical edge in the photo (building corner, pole), in pixels; repeat for each")
+    an.add_argument("--horizon", metavar="X,Y;X,Y;...", help="3+ points on a level sea/plain horizon, pixels")
+    an.add_argument("--horizon-height", type=float, default=2.0, help="eye height above that horizon, metres")
+    an.add_argument("--level", action="store_true", help="camera was level (no roll): weak extra constraint")
     an.add_argument("--out", default="skyclock_out")
     an.set_defaults(func=cmd_analyze)
 

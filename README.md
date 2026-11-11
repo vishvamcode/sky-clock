@@ -91,6 +91,14 @@ run every mode and see the error against the known truth.
   aliases.
 * **One streak** only gives a set of lines on the map, not a point, unless the place or the time is
   known.
+* **Which way is up (optional).** If the photo shows truly vertical edges (building corners, lamp posts,
+  door frames) or a level sea horizon, mark them in "Optional: mark which way is up" (click both ends of
+  each edge). With the stars, they fix the zenith, which gives the **latitude**, and the longitude once the
+  time is known (or the time once the longitude is known), even with no satellite at all. On a simulated
+  70 degree photo, two edges spanning 20 degrees of altitude, clicked to 1.5 px, gave the place to about
+  15 to 25 km at a known time. Combined with **one** streak they turn its line of places into a point
+  (0.2 km in the simulated test). Short, close, nearly parallel edges (a chimney) fix the zenith too poorly
+  and are refused with a note; edges that disagree with the satellites raise "CHECK THE MARKED LINES".
 * **Check verdict.** A likelihood-ratio test of your claim with your stated tolerances: *consistent*
   (p >= 0.01), *tension* (1e-4 <= p < 0.01), *inconsistent* (p < 1e-4). *No match* means no catalogued
   satellite fits at the claimed time and place: the claim is wrong, or the streaks are not catalogued
@@ -117,6 +125,8 @@ skyclock analyze photo.jpg --mode blind --window 2026-11-10T15:00Z 2026-11-10T21
 
 # other useful flags: --use-exif, --exposure 10, --tracking, --disable 3,5, --region 59,18,1500,
 #   --catalog spacetrack | celestrak-starlink | file --catalog-file my.tle, --plate nova, --wcs my.wcs
+# vertical edges / a sea horizon / a level camera, in pixels (x right, y down):
+#   --vertical 856,1990,941,1031 --vertical 2641,1568,2044,559 --horizon "10,900;800,905;1600,910" --level
 ```
 
 Outputs go to `skyclock_out/`: `summary.md`, `result.json`, `annotated.png`, `map.html`, `time.png`.
@@ -242,6 +252,8 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
   photo (Space-Track history).
 * The blind search over a whole night with ~10,000 LEO objects takes minutes on a laptop; narrow the window
   or region when you can.
+* Marked vertical edges must really be vertical: trees, leaning poles and sloping roof lines give a wrong
+  zenith. Two long edges far apart across the frame work best. Moon and planets are not used yet.
 * Observer height is fixed (default sea level); a mountain top at 2 km shifts the place by roughly that
   much along the line of sight.
 
@@ -249,7 +261,8 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
 
 ```
 skyclock/      library: catalog, geometry, imageio, detect, platesolve, observations,
-               fit, identify, search, solve, report, pipeline, simulate, cli
+               fit, identify, search, solve, report, pipeline, simulate, zenith,
+               validate, cli
 app/           Streamlit web app
 tests/         pytest suite
 docs/feasibility/   original feasibility report, figures and simulation scripts

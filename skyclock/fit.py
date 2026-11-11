@@ -148,8 +148,9 @@ class FitResult:
 
 class Fitter:
     def __init__(self, obs_list, sat_idx, catalog, epoch: Epoch, h_km=0.0, tracking=False, scale_rad=None,
-                 T_max=3600.0):
+                 T_max=3600.0, zenith=None):
         self.obs = obs_list
+        self.zenith = zenith  # optional zenith.Zenith measured from vertical edges / horizon
         self.T_max = float(T_max)
         self.sat_idx = [int(k) for k in sat_idx]
         self.catalog, self.epoch, self.h, self.tracking = catalog, epoch, h_km, tracking
@@ -219,6 +220,9 @@ class Fitter:
             per.append(seg)
             out.append(seg)
             out.append(np.array(rpri))
+        if self.zenith is not None:
+            from .zenith import zenith_residuals
+            out.append(zenith_residuals(self.zenith, self.epoch, lat, lon, t))
         res = np.concatenate(out)
         if priors:
             pr = []
@@ -254,6 +258,11 @@ class Fitter:
         full, per = self.residuals(x, priors, parts=True)
         chi2_data = float(sum(np.sum(p**2) for p in per))
         n_data = int(sum(len(p) for p in per))
+        if self.zenith is not None:  # the zenith's two residuals are data too
+            from .zenith import zenith_residuals
+            zr = zenith_residuals(self.zenith, self.epoch, x[0], x[1], x[2])
+            chi2_data += float(zr @ zr)
+            n_data += 2
         J = res.jac
         cov = np.zeros((len(x), len(x)))
         degenerate = False
