@@ -113,6 +113,34 @@ run every mode and see the error against the known truth.
 
 ---
 
+## Daytime photos (Sun and shadows)
+
+The app's **Daytime** page (and `skyclock sun`) measures the Sun's altitude from **two or more upright objects
+and the tips of their shadows** on level ground: the line from each shadow tip to the top of its object
+points at the Sun, so the Sun does not need to be in the frame, and the objects themselves show which way is
+up. Only the field of view is needed (EXIF focal length). A compass heading (phones store it in EXIF) adds the
+Sun's azimuth.
+
+What it gives, measured on simulated phone photos (26 mm lens, clicks good to 2 px, focal length to 2 %):
+
+| Known | Result |
+|---|---|
+| nothing else | Sun altitude +-0.6 deg |
+| time | a circle of possible places; with the compass (+-8 deg), a point good to about +-450 km |
+| place and day | the time to about +-5 min (morning and afternoon; the compass picks one) |
+| place, compass, no date | date ranges (two per year), several weeks wide |
+| two photos 3 h apart, times known | the place to about +-200 km |
+
+Daytime is far coarser than night: 1 deg of Sun altitude is 111 km on the ground. It assumes vertical objects,
+level ground and an undistorted lens. Sun positions agree with JPL DE430 to 0.01 deg, and refraction with
+skyfield's standard atmosphere to 0.02 deg.
+
+```bash
+skyclock sun photo.jpg --pole 812,2210,830,1480,1290,2400 --pole 2410,2050,2422,1600,2790,2160 \
+    --time 2026-06-01T10:30:00Z            # -> place (circle, or a point with --heading)
+skyclock sun photo.jpg --pole ... --lat 59.33 --lon 18.06 --time 2026-06-01T12:00:00Z   # -> time
+```
+
 ## Command line
 
 ```bash
@@ -274,9 +302,9 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
 
 ```
 skyclock/      library: catalog, geometry, imageio, detect, platesolve, observations,
-               fit, identify, search, solve, report, pipeline, simulate, zenith, bodies,
+               fit, identify, search, solve, report, pipeline, simulate, zenith, bodies, sun,
                validate, cli
-app/           Streamlit web app
+app/           Streamlit web app (pages/2_Daytime.py: the daytime page)
 tests/         pytest suite
 docs/feasibility/   original feasibility report, figures and simulation scripts
 ```

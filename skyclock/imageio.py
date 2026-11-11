@@ -143,4 +143,10 @@ def exif_hints(exif: dict) -> dict:
         hints["lat"], hints["lon"] = lat, lon
     except (KeyError, IndexError, ValueError, ZeroDivisionError):
         pass
+    try:  # compass direction the camera faced (phones); 'M' = magnetic north, 'T' = true north
+        if gps.get("GPSImgDirection") is not None:
+            hints["heading_deg"] = float(_num(gps["GPSImgDirection"])) % 360
+            hints["heading_ref"] = str(gps.get("GPSImgDirectionRef", "T")).strip()[:1] or "T"
+    except (ValueError, ZeroDivisionError, TypeError):
+        pass
     return hints
