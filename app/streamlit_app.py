@@ -28,6 +28,7 @@ from skyclock.platesolve import local_solver_available  # noqa: E402
 from skyclock.solve import MODES, Settings, analyze  # noqa: E402
 from skyclock.zenith import UpMarks  # noqa: E402
 from skyclock.bodies import BODIES, BodyMark  # noqa: E402
+from skyclock import public  # noqa: E402
 
 try:  # optional: click on the photo to mark lines (pip install streamlit-image-coordinates)
     from streamlit_image_coordinates import streamlit_image_coordinates
@@ -98,7 +99,8 @@ with st.sidebar:
              "github-archive": "Past orbits, public archive (no account)",
              "spacetrack": "Space-Track history (account)", "file": "My own TLE/OMM file",
              "synthetic": "Synthetic (demo only)"}
-    cat_kind = st.selectbox("Source", list(CATALOG_CHOICES), format_func=short.get)
+    choices = [c for c in CATALOG_CHOICES if not (public.PUBLIC and c == "spacetrack")]
+    cat_kind = st.selectbox("Source", choices, format_func=short.get)
     st.caption(CATALOG_CHOICES[cat_kind])
     st_user = st_pw = None
     cat_file = None
@@ -293,6 +295,9 @@ if mode in ("time", "blind") and not use_body_window:
     base = d_time or datetime.now(timezone.utc).replace(microsecond=0)
     s.window_start = _dt_input("Window start", base - timedelta(hours=1), "ws")
     s.window_end = _dt_input("Window end", base + timedelta(hours=1), "we")
+    if public.check_window(s.window_start, s.window_end):
+        st.error(public.check_window(s.window_start, s.window_end))
+        st.stop()
     if s.window_end <= s.window_start:
         st.error("Window end must be after window start.")
         st.stop()
@@ -312,7 +317,7 @@ if not st.checkbox("Observer must be in darkness (Sun below -3 deg)", True):
     s.sun_max_alt_deg = None
 
 consent = True
-if mode in ("blind", "place", "time"):
+if mode in ("blind", "place", "time", "date") or public.PUBLIC:
     consent = st.checkbox("I confirm this is my own photo, or a public image whose claimed time/place I am "
                           "verifying, and I will not use the result to locate a private person.")
 
@@ -328,46 +333,47 @@ if go:
         st.info("Demo photo: using the synthetic catalogue it was made with.")
         cat_kind = "synthetic"
     try:
-        with st.spinner("Plate solving..."):
-            wbytes = wcs_file if plate_method == "wcs" else None
-            method = plate_method
-            if method == "local" and not local_solver_available() and demo_wcs is not None:
-                method, wbytes = "wcs", demo_wcs
-            plate = plate_solve(det, gray, method, nova_key, wbytes, hint=plate_hint(s),
-                                fov_deg=exif_hints(exif).get("fov_x_deg"))
-        if plate is None:
-            st.error("Plate solving failed: the stars could not be matched to a catalogue. Try a WCS file.")
-            st.stop()
-        if use_body_window:
-            from dataclasses import replace as _replace
-            from skyclock.solve import date_from_bodies, window_from_dates
-            with st.spinner("Dating from the Moon/planets..."):
-                dts, _ = date_from_bodies(plate, _replace(s, auto_bodies=False), det)
-            if not dts:
-                st.error("The marked Moon/planets give no date in 2000 to now: check the names, or set the window.")
+        with public.analysis_slot():
+            with st.spinner("Plate solving..."):
+                wbytes = wcs_file if plate_method == "wcs" else None
+                method = plate_method
+                if method == "local" and not local_solver_available() and demo_wcs is not None:
+                    method, wbytes = "wcs", demo_wcs
+                plate = plate_solve(det, gray, method, nova_key, wbytes, hint=plate_hint(s),
+                                    fov_deg=exif_hints(exif).get("fov_x_deg"))
+            if plate is None:
+                st.error("Plate solving failed: the stars could not be matched to a catalogue. Try a WCS file.")
                 st.stop()
-            s = window_from_dates(s, dts)
-            st.info(f"Search window from the Moon/planet date: {s.window_start:%Y-%m-%d %H:%M} to "
-                    f"{s.window_end:%H:%M} UTC.")
-        catalog = None
-        if mode != "date":
-            when = s.time or s.window_start
-            with st.spinner("Loading satellite catalogue..."):
-                fh = hashlib.sha1(cat_file).hexdigest() if cat_file else None
-                when_key = when.strftime("%Y-%m-%dT%H") if cat_kind in ("spacetrack", "github-archive") else None
-                catalog = _catalog(cat_kind, when_key, fh, cat_file, st_user, st_pw)
-        obs = build_obs(det.streaks, plate, s.epoch())
-        bar = st.progress(0.0, "Analysing...")
-        res = analyze(obs, plate, catalog, s, progress=lambda f, m: bar.progress(float(min(max(f, 0), 1)), m),
-                      det=det)
-        bar.empty()
-        pred = None
-        if res.solutions:
-            s0 = res.solutions[0]
-            pred = predicted_in_view(catalog, res.epoch, s0.lat, s0.lon, res.epoch.seconds_from(s0.t_mid), plate,
-                                     s.h_km, T=s0.exposure_s, tracking=s.tracking)
-        st.session_state["last"] = dict(res=res, plate=plate.summary(), pred=pred, key=img_key,
-                                        claim=(s.lat, s.lon) if s.lat is not None else None)
+            if use_body_window:
+                from dataclasses import replace as _replace
+                from skyclock.solve import date_from_bodies, window_from_dates
+                with st.spinner("Dating from the Moon/planets..."):
+                    dts, _ = date_from_bodies(plate, _replace(s, auto_bodies=False), det)
+                if not dts:
+                    st.error("The marked Moon/planets give no date in 2000 to now: check the names, or set the window.")
+                    st.stop()
+                s = window_from_dates(s, dts)
+                st.info(f"Search window from the Moon/planet date: {s.window_start:%Y-%m-%d %H:%M} to "
+                        f"{s.window_end:%H:%M} UTC.")
+            catalog = None
+            if mode != "date":
+                when = s.time or s.window_start
+                with st.spinner("Loading satellite catalogue..."):
+                    fh = hashlib.sha1(cat_file).hexdigest() if cat_file else None
+                    when_key = when.strftime("%Y-%m-%dT%H") if cat_kind in ("spacetrack", "github-archive") else None
+                    catalog = _catalog(cat_kind, when_key, fh, cat_file, st_user, st_pw)
+            obs = build_obs(det.streaks, plate, s.epoch())
+            bar = st.progress(0.0, "Analysing...")
+            res = analyze(obs, plate, catalog, s, progress=lambda f, m: bar.progress(float(min(max(f, 0), 1)), m),
+                          det=det)
+            bar.empty()
+            pred = None
+            if res.solutions:
+                s0 = res.solutions[0]
+                pred = predicted_in_view(catalog, res.epoch, s0.lat, s0.lon, res.epoch.seconds_from(s0.t_mid), plate,
+                                         s.h_km, T=s0.exposure_s, tracking=s.tracking)
+            st.session_state["last"] = dict(res=res, plate=plate.summary(), pred=pred, key=img_key,
+                                            claim=(s.lat, s.lon) if s.lat is not None else None)
     except Exception as e:  # show the reason, keep the app alive
         st.error(f"{type(e).__name__}: {e}")
         st.stop()
