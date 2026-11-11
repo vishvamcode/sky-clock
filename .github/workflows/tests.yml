@@ -3,12 +3,20 @@ on: [push, pull_request]
 jobs:
   pytest:
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+      # Optional: only the plate-solving and catalogue-star tests use astrometry.net, and they skip without it.
+      # When the runner's Ubuntu package mirror is unreachable, apt used to hang for ~48 min and fail the whole
+      # run before any test ran; now it gives up after 8 min and the tests run anyway.
       - name: astrometry.net (for the plate-solving test)
-        run: sudo apt-get update && sudo apt-get install -y astrometry.net astrometry-data-tycho2-10-19
+        continue-on-error: true
+        timeout-minutes: 8
+        run: |
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=20 install -y astrometry.net astrometry-data-tycho2-10-19
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: pytest -q
+      - run: pytest -q -rs
