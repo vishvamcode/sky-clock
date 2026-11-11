@@ -53,20 +53,80 @@ class Detection:
     shape: tuple
     bg_sigma: float
     notes: list = field(default_factory=list)
+    sky_mask: np.ndarray | None = None  # True where the pixel is open sky (None: whole frame treated as sky)
 
 
-def background(gray, block=64):
+def background(gray, block=64, sky=None):
+    """Smooth sky background. With a sky mask, only sky pixels are used, so the sky just above a dark
+    tree line is not under-estimated (which would leave a bright band that merges with streaks)."""
     H, W = gray.shape
     ny, nx = int(np.ceil(H / block)), int(np.ceil(W / block))
-    pad = np.pad(gray, ((0, ny * block - H), (0, nx * block - W)), mode="edge")
+    src = gray if sky is None else np.where(sky, gray, np.nan)
+    pad = np.pad(src, ((0, ny * block - H), (0, nx * block - W)), mode="edge")
     blocks = pad.reshape(ny, block, nx, block).transpose(0, 2, 1, 3).reshape(ny, nx, -1)
-    med = np.median(blocks, axis=2)
+    if sky is None:
+        med = np.median(blocks, axis=2)
+    else:
+        frac = np.mean(np.isfinite(blocks), axis=2)
+        med = np.nanmedian(blocks, axis=2)
+        bad = ~(frac > 0.1)
+        if bad.all():
+            return background(gray, block)
+        if bad.any():  # fill blocks with (almost) no sky from the nearest sky block
+            idx = ndimage.distance_transform_edt(bad, return_distances=False, return_indices=True)
+            med = med[tuple(idx)]
     med = ndimage.median_filter(med, size=3, mode="nearest")
     zy, zx = H / ny, W / nx
     yy = (np.arange(H) + 0.5) / zy - 0.5
     xx = (np.arange(W) + 0.5) / zx - 0.5
     Y, X = np.meshgrid(np.clip(yy, 0, ny - 1), np.clip(xx, 0, nx - 1), indexing="ij")
     return ndimage.map_coordinates(med, [Y, X], order=1, mode="nearest").astype(np.float32)
+
+
+def sky_mask(gray, factor=4, min_frac=0.03):
+    """Open-sky mask: True where the image shows sky, False on trees, roofs, ground, buildings.
+
+    Works on a 1/``factor`` copy with stars and thin streaks removed by a median filter. Foreground is
+    (a) clearly darker than the brightest sky nearby (silhouettes against light-polluted sky) or
+    (b) textured (foliage, edges). Returns None when the whole frame looks like sky, so callers can skip it.
+    """
+    g = np.asarray(gray, np.float32)
+    H, W = g.shape
+    h, w = H // factor, W // factor
+    if h < 40 or w < 40:
+        return None
+    small = g[:h * factor, :w * factor].reshape(h, factor, w, factor).mean((1, 3))
+    base = ndimage.median_filter(small, 5)
+    noise = robust_sigma(small - base) / np.sqrt(2.0) + 1e-6
+    tex = np.sqrt(ndimage.uniform_filter((base - ndimage.uniform_filter(base, 9)) ** 2, 9))
+    win = max(15, int(0.12 * max(h, w)) | 1)
+    env = ndimage.gaussian_filter(ndimage.maximum_filter(ndimage.median_filter(base, 9), win), win / 4)
+    dark = (base < 0.5 * env) & (env - base > 8 * noise)
+    cand = ~dark
+    if cand.mean() < min_frac:
+        return None
+    thr = max(4.0 * float(np.median(tex[cand])), 3.0 * noise)
+    m = cand & (tex < thr)
+    m = ndimage.binary_closing(m, iterations=3)
+    m = ndimage.binary_opening(m, iterations=3)
+    lab, n = ndimage.label(m)
+    if n == 0:
+        return None
+    sizes = ndimage.sum(m, lab, range(1, n + 1))
+    m = np.isin(lab, 1 + np.where(sizes > 0.01 * m.size)[0])
+    m = ndimage.binary_fill_holes(m)
+    m = ndimage.binary_erosion(m, iterations=2)
+    frac = float(m.mean())
+    if frac > 0.97 or frac < min_frac:
+        return None
+    full = np.zeros((H, W), bool)
+    up = np.repeat(np.repeat(m, factor, 0), factor, 1)
+    full[:up.shape[0], :up.shape[1]] = up
+    if up.shape[0] < H:
+        full[up.shape[0]:, :up.shape[1]] = up[-1:, :]
+    if up.shape[1] < W:
+        full[:, up.shape[1]:] = full[:, up.shape[1] - 1:up.shape[1]]
+    return full
 
 
 def robust_sigma(x, n=200000, seed=0):
@@ -76,21 +136,24 @@ def robust_sigma(x, n=200000, seed=0):
     return 1.4826 * np.median(np.abs(x - np.median(x))) + 1e-9
 
 
-def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge_margin=None):
+def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge_margin=None, use_sky_mask=True):
     gray = np.asarray(gray, dtype=np.float32)
     H, W = gray.shape
+    sky = sky_mask(gray) if use_sky_mask else None
     diag = float(np.hypot(H, W))
     min_length_px = min_length_px or max(30.0, 0.02 * diag)
     frag_len = max(10.0, 0.004 * diag)
-    res = gray - background(gray)
-    sig = robust_sigma(res)
+    res = gray - background(gray, sky=sky)
+    sig = robust_sigma(res if sky is None else res[sky])
     sm = ndimage.gaussian_filter(res, 1.2)
-    sig_sm = robust_sigma(sm)
+    sig_sm = robust_sigma(sm if sky is None else sm[sky])
     mask = sm > k_mask * sig_sm
+    if sky is not None:
+        mask &= sky  # cut components at the tree line, so a streak is not merged with a bright edge
     lab, n = ndimage.label(mask)
     notes = []
     if n == 0:
-        return Detection([], [], (H, W), float(sig), ["no significant pixels"])
+        return Detection([], [], (H, W), float(sig), ["no significant pixels"], sky)
     objs = ndimage.find_objects(lab)
     stars, frags = [], []
     for i, sl in enumerate(objs, start=1):
@@ -113,6 +176,8 @@ def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge
             l2, l1 = max(ev[0], 1e-3), max(ev[1], 1e-3)
         L, wid = 4 * np.sqrt(l1), 4 * np.sqrt(l2)
         peak = float(sm[ys, xs].max())
+        if sky is not None and not sky[int(round(cy)), int(round(cx))]:
+            continue  # trees, roofs, ground: lights and leaf gaps are not stars or streaks
         if L >= frag_len and L / wid >= 3.0:
             u = evec[:, 1] if area >= 8 else np.array([1.0, 0.0])
             t = (xs - cx) * u[0] + (ys - cy) * u[1]
@@ -127,7 +192,7 @@ def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge
     streaks = []
     edge_margin = edge_margin
     for cl in clusters:
-        st = _refine(res, sig, cl, edge_margin)
+        st = _refine(res, sig, cl, edge_margin, sky)
         if st is None:
             continue
         if st["length"] < min_length_px or st["snr"] < 6:
@@ -146,7 +211,10 @@ def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge
                           s["width"], s["length"], s["snr"]))
     if not stars:
         notes.append("no stars found: plate solving will fail")
-    return Detection(out, stars, (H, W), float(sig), notes)
+    if sky is not None:
+        notes.append(f"sky mask: {100 * sky.mean():.0f}% of the frame is open sky; stars and streaks outside it "
+                     "are ignored, and streak ends at its edge are not used for timing")
+    return Detection(out, stars, (H, W), float(sig), notes, sky)
 
 
 def _same_line(a, b):
@@ -223,7 +291,7 @@ def _profiles(res, c, u, ts, hw, nsub=3, step=2.0):
             return offs, np.nanmean(vals, axis=2)  # (nt, noff)
 
 
-def _refine(res, sig, cl, edge_margin):
+def _refine(res, sig, cl, edge_margin, sky=None):
     H, W = res.shape
     c, u = cl["c"].astype(float), cl["u"].astype(float)
     if u[0] < 0 or (u[0] == 0 and u[1] < 0):
@@ -232,7 +300,8 @@ def _refine(res, sig, cl, edge_margin):
     step = 2.0
     tmin, tmax = cl["tmin"] - 25, cl["tmax"] + 25
     core_hw = max(2.0, 1.5 * cl["w"])
-    for _ in range(3):
+    prev = None
+    for _it in range(15):
         ts = np.arange(tmin, tmax + step, step)
         offs, prof = _profiles(res, c, u, ts, hw, step=step)
         valid = np.isfinite(prof).all(axis=1)
@@ -246,6 +315,11 @@ def _refine(res, sig, cl, edge_margin):
         n_core = core.sum()
         sigS = sig * np.sqrt(n_core / 3.0)
         on = valid & (S > 3.0 * sigS)
+        if sky is not None:
+            xs_ = np.clip(np.round(c[0] + ts * u[0]).astype(int), 0, W - 1)
+            ys_ = np.clip(np.round(c[1] + ts * u[1]).astype(int), 0, H - 1)
+            in_sky = sky[ys_, xs_]
+            on &= in_sky
         # edge-like (horizon/tree) profiles: tails on the two sides differ strongly
         left, right = np.nanmedian(prof[:, :3], axis=1), np.nanmedian(prof[:, -3:], axis=1)
         edge_like = np.abs(left - right) > 0.6 * np.maximum(S / max(n_core, 1), 1e-9)
@@ -292,7 +366,11 @@ def _refine(res, sig, cl, edge_margin):
             else:
                 chains.append([r0, r1])
         i0, i1 = max(chains, key=lambda ab: ab[1] - ab[0])
-        tmin, tmax = ts[i0] - 25, ts[i1] + 25
+        cur = (round(float(ts[i0])), round(float(ts[i1])))
+        if _it >= 2 and cur == prev:
+            break
+        prev = cur
+        tmin, tmax = ts[i0] - 40, ts[i1] + 40
     # final products
     seg = slice(i0, i1 + 1)
     on_seg = on[seg]
@@ -313,12 +391,33 @@ def _refine(res, sig, cl, edge_margin):
         return ts[j]
 
     ta, tb = edge_pos(i0, -1), edge_pos(i1, +1)
+
+    def rise_px(t_end, inward):
+        """Distance from the half-maximum end to where the streak reaches 80 % of its plateau.
+        A real exposure start/stop is a sharp step (a few px); a satellite fading into Earth's shadow,
+        or a streak lost in a brightening sky, ramps over tens of px and cannot be used for timing."""
+        j = int(np.argmin(np.abs(ts - t_end)))
+        k = j
+        while 0 <= k < len(ts) and Ssm[k] < 0.8 * plateau and abs(ts[k] - t_end) < 400:
+            k += inward
+        return float(abs(ts[min(max(k, 0), len(ts) - 1)] - t_end))
+
+    rise1, rise2 = rise_px(ta, +1), rise_px(tb, -1)
     p1 = c + ta * u
     p2 = c + tb * u
     em = edge_margin if edge_margin is not None else hw + 3.0
 
     def clipped(pp):
-        return bool(pp[0] < em or pp[1] < em or pp[0] > W - 1 - em or pp[1] > H - 1 - em)
+        if pp[0] < em or pp[1] < em or pp[0] > W - 1 - em or pp[1] > H - 1 - em:
+            return True
+        if sky is not None:
+            # end hidden behind trees/roofs: the streak may continue behind them
+            d = u if (pp - c) @ u > 0 else -u
+            for k in range(2, 26, 2):
+                q = np.round(pp + k * d).astype(int)
+                if not (0 <= q[0] < W and 0 <= q[1] < H) or not sky[q[1], q[0]]:
+                    return True
+        return False
 
     nrm = np.array([-u[1], u[0]])
     sel = np.where(on)[0]
@@ -343,5 +442,19 @@ def _refine(res, sig, cl, edge_margin):
     if len(pts) > 200:
         pts = pts[np.linspace(0, len(pts) - 1, 200).astype(int)]
     snr = float(S[sel].sum() / (sigS * np.sqrt(max(len(sel), 1))))
-    return dict(p1=[float(p1[0]), float(p1[1])], p2=[float(p2[0]), float(p2[1])], c1=clipped(p1), c2=clipped(p2),
+    # a real streak is mostly continuous; a phone-stack streak is dashed with long dashes. A chain of
+    # stars that happens to line up gives short, sparse runs (a few stations per star).
+    oi = np.where(on_seg)[0]
+    run_lens, r0 = [], oi[0] if len(oi) else 0
+    for a_, b_ in zip(oi[:-1], oi[1:]):
+        if b_ - a_ > 1:
+            run_lens.append(a_ - r0 + 1); r0 = b_
+    if len(oi):
+        run_lens.append(oi[-1] - r0 + 1)
+    fill = float(on_seg.mean())
+    if fill < 0.6 and (not run_lens or np.median(run_lens) < 6):
+        return None
+    fade_lim = max(14.0, 4.0 * width)
+    return dict(p1=[float(p1[0]), float(p1[1])], p2=[float(p2[0]), float(p2[1])],
+                c1=clipped(p1) or rise1 > fade_lim, c2=clipped(p2) or rise2 > fade_lim, rise=(rise1, rise2), fill=float(on_seg.mean()),
                 dashed=dashed, samples=pts.tolist(), sigma=sigma, width=width, length=float(tb - ta), snr=snr)

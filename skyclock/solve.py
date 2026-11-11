@@ -101,8 +101,10 @@ def _fit_assignment(obs, assign, catalog, epoch, lat, lon, t, s: Settings, scale
     items = sorted(assign.items())
     o_list = [obs[i] for i, _ in items]
     k_list = [k for _, k in items]
-    T0 = s.exposure_s or initial_T(o_list, k_list, catalog, epoch, lat, lon, t, s.h_km, default=10.0)
-    fitter = Fitter(o_list, k_list, catalog, epoch, s.h_km, s.tracking, scale)
+    T0 = s.exposure_s or min(initial_T(o_list, k_list, catalog, epoch, lat, lon, t, s.h_km, default=10.0),
+                             s.exposure_max_s)
+    fitter = Fitter(o_list, k_list, catalog, epoch, s.h_km, s.tracking, scale,
+                    T_max=s.exposure_s or s.exposure_max_s)
     m = len(o_list)
     x0 = np.concatenate([[lat, lon, t, T0], np.zeros(2 * m)])
     free = np.ones(len(x0), bool)
@@ -226,6 +228,36 @@ def _dedupe(sols, km=25.0, sec=8.0):
 
 
 def analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
+    result = _analyze(obs, plate, catalog, s, progress)
+    _plain_language_notes(result, obs, s)
+    return result
+
+
+def _plain_language_notes(result: Result, obs, s: Settings):
+    """Up-front warnings when the answer is ambiguous or the fit is poor (added after the search)."""
+    sols = result.solutions
+    if not sols:
+        return
+    best = sols[0]
+    ties = [x for x in sols[1:] if len(x.matches) == len(best.matches)
+            and x.chi2 - best.chi2 < max(10.0, 0.1 * best.chi2)]
+    if ties:
+        names = "; ".join(f"{', '.join(m['name'] for m in x.matches)} at {x.t_start:%H:%M:%S} UTC"
+                          for x in [best] + ties)
+        result.notes.insert(0, f"AMBIGUOUS: {len(ties) + 1} solutions fit about equally well ({names}). The photo "
+                               "alone cannot choose between them. A second streak from another orbit, the time to "
+                               "within a few minutes, or the exact place would.")
+    if best.dof > 0 and best.chi2 / best.dof > 3:
+        result.notes.insert(0, f"POOR FIT: even the best solution has chi2/dof = {best.chi2 / best.dof:.1f} "
+                               "(about 1 is expected). The streak may be from an uncatalogued object or an aircraft, "
+                               "the catalogue may be too old, or the exposure length, time window or place you gave "
+                               "may be wrong.")
+    if s.exposure_s is None and all(not any(o.trusted_ends) for o in obs) and best.exposure_s >= s.exposure_max_s - 0.5:
+        result.notes.append(f"No streak shows a real start or end, so the exposure length is only bounded from "
+                            f"below; the fit stopped at the maximum you allowed ({s.exposure_max_s:.0f} s).")
+
+
+def _analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
     if s.mode not in MODES:
         raise ValueError(f"unknown mode {s.mode}")
     epoch = s.epoch()

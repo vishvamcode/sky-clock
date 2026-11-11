@@ -67,9 +67,24 @@ def local_solver_available() -> bool:
     return shutil.which("solve-field") is not None
 
 
+def zenith_radec(when, lat_deg, lon_deg):
+    """RA/Dec (deg) of the local zenith: a good plate-solving hint for sky photos (the camera points
+    somewhere above the horizon, i.e. within 90 deg of it)."""
+    from astropy.coordinates import EarthLocation, SkyCoord, AltAz
+    from astropy.time import Time
+    import astropy.units as u
+    loc = EarthLocation(lat=lat_deg * u.deg, lon=lon_deg * u.deg)
+    z = SkyCoord(alt=90 * u.deg, az=0 * u.deg, frame=AltAz(obstime=Time(when), location=loc)).icrs
+    return float(z.ra.deg), float(z.dec.deg)
+
+
 def solve_local(stars, shape, scale_low_deg=3.0, scale_high_deg=180.0, cpulimit=120, max_stars=200,
-                tweak_order=3) -> PlateSolution | None:
-    """Solve from a star list [(x, y, flux), ...] with a local astrometry.net install."""
+                tweak_order=None, hint=None) -> PlateSolution | None:
+    """Solve from a star list [(x, y, flux), ...] with a local astrometry.net install.
+
+    ``hint`` = (ra_deg, dec_deg, radius_deg) limits the search to that part of the sky, which makes wide
+    fields (where astrometry.net is slow) solve in seconds instead of minutes.
+    ``tweak_order`` None picks 2 for normal lenses and 4 for wide/fisheye fields (more distortion)."""
     if not local_solver_available():
         raise RuntimeError("solve-field not found: install astrometry.net and wide-field index files "
                            "(see README) or use the nova.astrometry.net API key option")
@@ -87,9 +102,11 @@ def solve_local(stars, shape, scale_low_deg=3.0, scale_high_deg=180.0, cpulimit=
                "--x-column", "X", "--y-column", "Y", "--sort-column", "FLUX",
                "--scale-units", "degwidth", "--scale-low", str(scale_low_deg), "--scale-high", str(scale_high_deg),
                "--no-plots", "--overwrite", "--dir", str(wd), "--cpulimit", str(cpulimit),
-               "--tweak-order", str(tweak_order), "--corr", str(wd / "out.corr"), "--wcs", str(wd / "out.wcs"),
+               "--tweak-order", str(tweak_order or (4 if scale_low_deg >= 40 else 3)), "--corr", str(wd / "out.corr"), "--wcs", str(wd / "out.wcs"),
                "--new-fits", "none", "--rdls", "none", "--index-xyls", "none", "--match", "none",
                "--solved", str(wd / "out.solved"), "--temp-axy", "--no-remove-lines", "--uniformize", "0"]
+        if hint is not None:
+            cmd += ["--ra", f"{hint[0]:.4f}", "--dec", f"{hint[1]:.4f}", "--radius", f"{hint[2]:.2f}"]
         try:
             subprocess.run(cmd, capture_output=True, text=True, timeout=cpulimit + 60, check=False)
         except subprocess.TimeoutExpired:
@@ -100,6 +117,32 @@ def solve_local(stars, shape, scale_low_deg=3.0, scale_high_deg=180.0, cpulimit=
         wcs = WCS(hdr)
         rms, nm = _corr_rms(wcs, wd / "out.corr", flip_h=None)
         return PlateSolution(wcs, (H, W), "astrometry.net (local)", rms, nm)
+
+
+SCALE_BANDS = [(40.0, 180.0), (12.0, 45.0), (3.0, 14.0)]  # field width (deg): wide/fisheye, normal, tele
+
+
+def solve_local_auto(stars, shape, hint=None, fov_deg=None, progress=None) -> PlateSolution | None:
+    """Try the most likely field widths first, each with a short time limit.
+
+    astrometry.net is slow on very wide fields when the scale range is open (minutes); split into bands,
+    a 97-degree field solves in a few seconds. ``fov_deg``: horizontal field width if known (EXIF focal
+    length); ``hint``: (ra, dec, radius) from a claimed time and place."""
+    bands = []
+    if fov_deg:
+        bands.append((0.8 * fov_deg, 1.25 * fov_deg))
+    bands += SCALE_BANDS
+    tries = [(b, hint) for b in bands]
+    if hint is not None:  # the hint may be wrong (wrong time/place claim): retry without it
+        tries += [(b, None) for b in bands]
+    for k, (band, h) in enumerate(tries):
+        if progress:
+            progress(k / len(tries), f"plate solving: field {band[0]:.0f}-{band[1]:.0f} deg"
+                     + (" near the zenith" if h else ""))
+        sol = solve_local(stars, shape, band[0], band[1], cpulimit=25 if h else 45, hint=h)
+        if sol is not None:
+            return sol
+    return None
 
 
 def _corr_rms(wcs, corr_path, flip_h=None):

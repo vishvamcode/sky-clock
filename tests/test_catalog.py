@@ -29,3 +29,11 @@ def test_parse_omm_json_and_merge():
 def test_leo_filter(constellation):
     assert len(constellation.leo_only(11)) == len(constellation)
     assert np.all(constellation.mean_motion > 14)
+
+
+def test_github_archive_coverage():
+    from datetime import datetime, timezone
+    from skyclock.catalog import github_archive_for
+    assert github_archive_for(datetime(2023, 8, 18, 2, 7, tzinfo=timezone.utc))["repo"] == "OndroNR/tle-archive"
+    assert github_archive_for(datetime(2026, 11, 1, tzinfo=timezone.utc))["repo"] == "crb0229/overhead"
+    assert github_archive_for(datetime(2025, 1, 1, tzinfo=timezone.utc)) is None
