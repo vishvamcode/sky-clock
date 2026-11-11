@@ -118,9 +118,25 @@ def run_all(image_bytes, image_name, settings: Settings, catalog, plate_method="
                         fov_deg=exif_hints(exif).get("fov_x_deg"))
     if plate is None:
         raise RuntimeError("plate solving failed: not enough stars matched")
+    callable_window = False
+    if callable(catalog):  # loader: lets the Moon/planet date choose the catalogue epoch first
+        when = settings.time or settings.window_start
+        if when is None and settings.mode != "date" and (settings.body_marks or settings.auto_bodies):
+            from dataclasses import replace
+            from .solve import date_from_bodies, window_from_dates
+            dates, _ = date_from_bodies(plate, replace(settings, auto_bodies=False), det)
+            if not dates or settings.mode not in ("time", "blind"):
+                raise RuntimeError("no time given: use mode 'date', or 'time'/'blind' with a marked Moon/planet")
+            settings = window_from_dates(settings, dates)
+            when = settings.window_start
+            callable_window = True
+        catalog = catalog(when) if settings.mode != "date" else None
     epoch = settings.epoch()
     obs = build_obs(det.streaks, plate, epoch)
-    res = analyze(obs, plate, catalog, settings, progress)
+    res = analyze(obs, plate, catalog, settings, progress, det=det)
+    if callable_window:
+        res.notes.insert(0, f"Satellite search window set from the Moon/planet date: "
+                            f"{settings.window_start:%Y-%m-%d %H:%M} to {settings.window_end:%H:%M} UTC.")
     return dict(gray=gray, display=display, exif=exif, hints=exif_hints(exif), detection=det, plate=plate,
                 observations=obs, result=res)
 

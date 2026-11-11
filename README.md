@@ -99,6 +99,13 @@ run every mode and see the error against the known truth.
   15 to 25 km at a known time. Combined with **one** streak they turn its line of places into a point
   (0.2 km in the simulated test). Short, close, nearly parallel edges (a chimney) fix the zenith too poorly
   and are refused with a note; edges that disagree with the satellites raise "CHECK THE MARKED LINES".
+* **Moon and planets (optional).** Mark the Moon or a planet (or tick "look for planets automatically") and
+  pick mode **date** to date the photo with no satellites at all, or use mode **time**/**blind** with "take the
+  search window from the Moon/planet date". Checked against JPL DE430 (positions agree within 2 arcsec, 39
+  for Jupiter). On test fields: Venus or Mars alone give the date to about +-1 h, Jupiter or Saturn to about
+  +-10 to 16 h (with 1 to 3 possible dates per year), the Moon to about +-6 min with the place known and about
+  +-1.5 h without it. The Moon plus Jupiter picked one date in a 3-year window. On a simulated photo, Saturn
+  alone found the right day in a 10-year window, and the satellites then gave 0.1 km and 0.2 s.
 * **Check verdict.** A likelihood-ratio test of your claim with your stated tolerances: *consistent*
   (p >= 0.01), *tension* (1e-4 <= p < 0.01), *inconsistent* (p < 1e-4). *No match* means no catalogued
   satellite fits at the claimed time and place: the claim is wrong, or the streaks are not catalogued
@@ -126,6 +133,9 @@ skyclock analyze photo.jpg --mode blind --window 2026-11-10T15:00Z 2026-11-10T21
 # other useful flags: --use-exif, --exposure 10, --tracking, --disable 3,5, --region 59,18,1500,
 #   --catalog spacetrack | celestrak-starlink | file --catalog-file my.tle, --plate nova, --wcs my.wcs
 # vertical edges / a sea horizon / a level camera, in pixels (x right, y down):
+# date the photo from the Moon / planets (pixels, optional name), then search satellites on that date:
+#   --mode date --body 836,1595,saturn [--date-window 2020-01-01 2030-01-01] [--find-planets]
+#   --mode blind --body 836,1595,saturn --i-understand      (window comes from the planet date)
 #   --vertical 856,1990,941,1031 --vertical 2641,1568,2044,559 --horizon "10,900;800,905;1600,910" --level
 ```
 
@@ -253,7 +263,10 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
 * The blind search over a whole night with ~10,000 LEO objects takes minutes on a laptop; narrow the window
   or region when you can.
 * Marked vertical edges must really be vertical: trees, leaning poles and sloping roof lines give a wrong
-  zenith. Two long edges far apart across the frame work best. Moon and planets are not used yet.
+  zenith. Two long edges far apart across the frame work best.
+* Automatic planet finding only looks at bright objects the plate solver did not match to a star; a bright
+  star it skipped that lies on a planet's path also "matches", so check the suggestion before using it.
+  Saturated, bloated planet images centre less well than the 1.5 px assumed.
 * Observer height is fixed (default sea level); a mountain top at 2 km shifts the place by roughly that
   much along the line of sight.
 
@@ -261,7 +274,7 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
 
 ```
 skyclock/      library: catalog, geometry, imageio, detect, platesolve, observations,
-               fit, identify, search, solve, report, pipeline, simulate, zenith,
+               fit, identify, search, solve, report, pipeline, simulate, zenith, bodies,
                validate, cli
 app/           Streamlit web app
 tests/         pytest suite

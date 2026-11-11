@@ -18,6 +18,7 @@ MODES = {
     "time": "Place known: find the time",
     "place": "Time known: find the place",
     "blind": "Neither known (within a search window): find both",
+    "date": "Nothing known: date the photo from the Moon and planets (no satellites needed)",
 }
 
 
@@ -43,9 +44,14 @@ class Settings:
     max_clusters: int = 25
     up_marks: object | None = None  # zenith.UpMarks: vertical edges / level horizon marked in the photo
     zenith: object | None = None  # zenith.Zenith (computed from up_marks once the plate is solved)
+    body_marks: list = field(default_factory=list)  # bodies.BodyMark: the Moon / planets marked in the photo
+    auto_bodies: bool = False  # also look for planets among the brightest unmatched point sources
+    date_start: datetime | None = None  # where to look for the Moon / planet date (default 2000 to now)
+    date_end: datetime | None = None
 
     def epoch(self):
-        ref = self.time or self.window_start
+        ref = self.time or self.window_start or (
+            (self.date_start or datetime.now(timezone.utc)) if self.mode == "date" else None)
         if ref is None:
             raise ValueError("a time or a search window is required")
         if ref.tzinfo is None:
@@ -92,10 +98,12 @@ class Result:
     locus: list | None = None  # single-streak degenerate loci: list of [[lat, lon], ...]
     epoch: Epoch | None = None
     zenith: dict | None = None  # what the marked verticals / horizon alone say (see zenith_only)
+    dates: list | None = None  # Moon / planet dating: [{time_utc, sigma_t_s, chi2, bodies}], best first
 
     def to_dict(self):
         return dict(mode=self.mode, solutions=[s.to_dict() for s in self.solutions], verdict=self.verdict,
-                    notes=self.notes, catalog=self.catalog_info, locus=self.locus, zenith=self.zenith)
+                    notes=self.notes, catalog=self.catalog_info, locus=self.locus, zenith=self.zenith,
+                    dates=self.dates)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -233,7 +241,61 @@ def _dedupe(sols, km=25.0, sec=8.0):
 ZENITH_MAX_SIGMA_DEG = 3.0  # beyond this the linearised zenith error model is not trustworthy
 
 
-def analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
+def window_from_dates(s: Settings, dates):
+    """Settings with the satellite search window centred on the best Moon/planet date (+-3 sigma, 0.5 to 6 h)."""
+    from dataclasses import replace
+    t0 = datetime.fromisoformat(dates[0]["time_utc"])
+    half = timedelta(seconds=float(np.clip(3 * dates[0]["sigma_t_s"], 1800, 6 * 3600)))
+    return replace(s, window_start=t0 - half, window_end=t0 + half)
+
+
+def date_from_bodies(plate, s: Settings, det=None, progress=None):
+    """Moon / planet dating. Returns (dates, notes); dates are dicts, best first."""
+    from . import bodies as B
+    start = s.date_start or datetime(2000, 1, 1, tzinfo=timezone.utc)
+    end = s.date_end or datetime.now(timezone.utc) + timedelta(days=1)
+    marks = list(s.body_marks)
+    notes = []
+    if s.auto_bodies and det is not None:
+        if progress:
+            progress(0.0, "looking for planets among the brightest objects")
+        hits = B.auto_find(det, plate, start, end, s.lat, s.lon, s.h_km)
+        for m, c in hits[:3]:
+            names = sorted({x.body for x in c})
+            notes.append(f"Bright object at ({m.x:.0f}, {m.y:.0f}) lies on the path of {', '.join(names)}: if it is "
+                         "not a bright star, mark it as that planet to use it.")
+        if not hits:
+            notes.append("No bright unmatched object lies on any planet's path in the date window.")
+    if not marks:
+        return [], notes
+    cands = []
+    for i, m in enumerate(marks):
+        if progress:
+            progress((i + 1) / (len(marks) + 1), f"dating from {m.name or 'marked object'}")
+        cands.append(B.date_candidates(m, plate, start, end, s.lat, s.lon, s.h_km))
+    comb = B.combine(cands) if all(cands) else []
+    notes += B.summary_notes(marks, cands, comb)
+    dates = [dict(time_utc=t.isoformat(), sigma_t_s=sg, chi2=c2, bodies=[x.body for x in xs]) for t, sg, c2, xs in comb]
+    if any(m.name == "moon" for m in marks) and (s.lat is None or s.lon is None):
+        notes.append("Moon without a known place: its parallax (up to 1 deg) limits the time to about +-1 to 2 h. "
+                     "Give the place to get minutes.")
+    return dates, notes
+
+
+def analyze(obs, plate, catalog, s: Settings, progress=None, det=None) -> Result:
+    dates, dnotes = [], []
+    if s.body_marks or s.auto_bodies:
+        dates, dnotes = date_from_bodies(plate, s, det, progress)
+        if s.mode in ("time", "blind") and s.window_start is None and dates:
+            s = window_from_dates(s, dates)
+            dnotes.append(f"Satellite search window set from the Moon/planet date: {s.window_start:%Y-%m-%d %H:%M} to "
+                          f"{s.window_end:%H:%M} UTC.")
+    if s.mode == "date":
+        r = Result("date", [], notes=dnotes)
+        r.dates = dates
+        if not s.body_marks and not s.auto_bodies:
+            r.notes.append("Mark the Moon or a planet in the photo (or let the app look for planets) to date it.")
+        return r
     zen_fail = weak = False
     if s.zenith is None and s.up_marks is not None and not s.up_marks.empty():
         from dataclasses import replace
@@ -251,6 +313,8 @@ def analyze(obs, plate, catalog, s: Settings, progress=None) -> Result:
         result.notes.append("The marked verticals/horizon were not used: mark at least two vertical edges, each "
                             "a good length, or at least three points on a level horizon.")
     _plain_language_notes(result, obs, s)
+    result.dates = dates or None
+    result.notes = dnotes + result.notes
     return result
 
 
