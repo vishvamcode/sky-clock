@@ -162,11 +162,12 @@ img_key = hashlib.sha1(data).hexdigest()[:12]
 
 st.subheader("Detected streaks")
 st.caption("Untick streaks that are not satellites (aircraft, meteors, lens flares). Circles: real "
-           "endpoints; squares: cut by the frame edge (not used for timing).")
+           "endpoints; squares: cut by the frame edge (not used for timing). A dashed streak (phone night mode) is "
+           "timed frame by frame when its dashes are evenly spaced and equally long.")
 rows = [dict(id=s.id, use=True, length_px=round(s.length_px), snr=round(s.snr), clipped=(s.clipped1 or s.clipped2),
-             dashed=s.dashed) for s in det.streaks]
+             dashes=len(s.dashes) if s.dashed else 0) for s in det.streaks]
 if rows:
-    edited = st.data_editor(pd.DataFrame(rows), disabled=["id", "length_px", "snr", "clipped", "dashed"],
+    edited = st.data_editor(pd.DataFrame(rows), disabled=["id", "length_px", "snr", "clipped", "dashes"],
                             hide_index=True, key="ed_" + img_key)
     use = dict(zip(edited["id"], edited["use"]))
     for s in det.streaks:
