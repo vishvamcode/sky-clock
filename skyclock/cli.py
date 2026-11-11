@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+
+import numpy as np
 from pathlib import Path
 
 from .pipeline import CATALOG_CHOICES, load_catalog, parse_time, run_all
@@ -158,6 +160,70 @@ def cmd_benchmark(a):
         print(f"wrote {V.apply_calibration(calib)}; the solver uses it from the next run", file=sys.stderr)
 
 
+def cmd_sun(a):
+    """Daytime: Sun altitude/azimuth from the Sun or pole+shadow pairs, then place or time."""
+    import json
+    from .imageio import exif_hints, load_image
+    from . import sun as SU
+    print(ETHICS, file=sys.stderr)
+    img = Path(a.image)
+    gray, _, exif = load_image(img.read_bytes(), img.name)
+    h = exif_hints(exif)
+    fov = a.fov or h.get("fov_x_deg")
+    if fov is None:
+        sys.exit("no field of view: pass --fov (horizontal field of view in degrees; a 26 mm phone lens is about 69)")
+    heading = a.heading if a.heading is not None else h.get("heading_deg")
+    poles = [[float(v) for v in p.split(",")] for p in (a.pole or [])]
+    if any(len(p) != 6 for p in poles):
+        sys.exit("--pole needs XBASE,YBASE,XTOP,YTOP,XTIP,YTIP")
+    marks = SU.SunMarks(poles=poles, sun=[float(v) for v in a.sun_at.split(",")] if a.sun_at else None,
+                        verticals=[[float(v) for v in e.split(",")] for e in (a.vertical or [])],
+                        heading_deg=heading, heading_sigma_deg=a.heading_sigma, click_sigma_px=a.click_sigma)
+    fix = SU.measure_sun(marks, gray.shape, fov)
+    if fix is None:
+        sys.exit("not enough marks: need 2 poles with shadows (or the Sun plus 2 vertical edges)")
+    out = dict(sun=fix.to_dict(), fov_x_deg=fov, heading_deg=heading)
+    print(f"Sun altitude {fix.alt_deg:.2f} +- {fix.alt_sigma_deg:.2f} deg"
+          + (f", azimuth {fix.az_deg:.1f} +- {fix.az_sigma_deg:.1f} deg" if fix.az_deg is not None else ""))
+    for n in fix.notes:
+        print("> " + n)
+    t = parse_time(a.time) or (h.get("time_utc") if a.use_exif else None)
+    if a.lat is not None and a.lon is not None and t is not None:
+        ts = SU.times_for_altitude(fix, a.lat, a.lon, t)
+        out["times"] = [dict(o, time_utc=o["time_utc"].isoformat()) for o in ts]
+        for o in ts:
+            print(f"time: {o['time_utc']:%Y-%m-%d %H:%M:%S} UTC +- {o['sigma_t_s'] / 60:.1f} min"
+                  + (f" (azimuth off by {o['az_miss_sigma']:.1f} sigma)" if o["az_miss_sigma"] is not None else ""))
+    elif t is not None:
+        r = SU.place_from_sun([(t, fix)])
+        if r is not None:
+            la, lo, cov, _ = r
+            out["place"] = dict(lat=la, lon=lo, sigma_east_km=float(np.sqrt(cov[0, 0])),
+                                sigma_north_km=float(np.sqrt(cov[1, 1])))
+            print(f"place: {la:.2f}, {lo:.2f} +- {np.sqrt(cov[0, 0]):.0f} km E, {np.sqrt(cov[1, 1]):.0f} km N")
+        else:
+            out["altitude_circle"] = SU.altitude_circle(fix, t)
+            print("altitude only: the place lies on a circle (written to sun.json); add the compass heading "
+                  "(--heading) or a second photo at another time to get a point")
+    elif a.lat is not None and a.lon is not None and fix.az_deg is not None:
+        ws = parse_time(a.date_window[0]) if a.date_window else datetime(2000, 1, 1, tzinfo=timezone.utc)
+        we = parse_time(a.date_window[1]) if a.date_window else datetime.now(timezone.utc)
+        ds = SU.date_and_time_from_sun(fix, a.lat, a.lon, ws, we)
+        out["dates"] = [dict(o, time_utc=o["time_utc"].isoformat()) for o in ds]
+        rg = SU.date_ranges(ds)
+        print(f"{len(ds)} day(s) fit, in {len(rg)} range(s):")
+        for f, l_, b in rg:
+            print(f"  {f:%Y-%m-%d} to {l_:%Y-%m-%d} (best {b['time_utc']:%Y-%m-%d %H:%M} UTC)")
+        if len(ds) > 20:
+            print("  The compass heading limits this; a known date range, or the Moon/planets at night, narrow it.")
+    else:
+        print("give --time (to get the place) or --lat/--lon (to get the time)")
+    od = Path(a.out)
+    od.mkdir(parents=True, exist_ok=True)
+    (od / "sun.json").write_text(json.dumps(out, indent=1, default=str))
+    print(f"wrote {od}/sun.json", file=sys.stderr)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="skyclock", description="Time and place from satellite streaks in a night photo")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -214,6 +280,24 @@ def main(argv=None):
                     help="where to look for the Moon/planet date (default 2000-01-01 to now)")
     an.add_argument("--out", default="skyclock_out")
     an.set_defaults(func=cmd_analyze)
+
+    su = sub.add_parser("sun", help="daytime: Sun altitude from shadows (or the Sun), then place or time")
+    su.add_argument("image")
+    su.add_argument("--pole", action="append", metavar="XB,YB,XT,YT,XS,YS",
+                    help="vertical object: base, top, and the tip of its shadow (pixels); repeat, 2 or more")
+    su.add_argument("--sun-at", metavar="X,Y", help="the Sun's centre, if in the frame")
+    su.add_argument("--vertical", action="append", metavar="X1,Y1,X2,Y2", help="extra vertical edges")
+    su.add_argument("--fov", type=float, help="horizontal field of view, deg (default: from EXIF)")
+    su.add_argument("--heading", type=float, help="compass azimuth the camera faced, deg (default: EXIF)")
+    su.add_argument("--heading-sigma", type=float, default=8.0)
+    su.add_argument("--click-sigma", type=float, default=2.0)
+    su.add_argument("--time", help="photo time (UTC, ISO 8601): gives the place")
+    su.add_argument("--use-exif", action="store_true", help="take the time from EXIF")
+    su.add_argument("--lat", type=float)
+    su.add_argument("--lon", type=float)
+    su.add_argument("--date-window", nargs=2, metavar=("START", "END"))
+    su.add_argument("--out", default="skyclock_sun")
+    su.set_defaults(func=cmd_sun)
 
     si = sub.add_parser("simulate", help="make a synthetic test photo with known truth")
     si.add_argument("--out", default="demo")
