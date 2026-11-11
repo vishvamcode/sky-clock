@@ -205,25 +205,26 @@ def combine(cands_by_mark):
     return out
 
 
-def bright_unmatched(det, plate, n=12, min_sep_px=6.0):
-    """The brightest detected point sources that the plate solver did not match to a catalogue star:
-    the places to look for a planet. (Sources the solver matched are stars.)"""
+def bright_unmatched(det, plate, n=12, min_sep_px=6.0, star_check=True, max_star_mag=4.0):
+    """The brightest detected point sources that are not known stars: the places to look for a planet.
+    A source is a star when the plate solver matched it, or (``star_check``) when a catalogue star brighter
+    than ``max_star_mag`` lies on it (see ``brightstars``: the very brightest stars are often missing
+    from the solver's index, and a saturated star is often left unmatched)."""
     stars = sorted(det.stars, key=lambda s: -s.flux)[: 4 * n]
     mxy = getattr(plate, "matched_xy", None)
-    out = []
-    for s in stars:
-        if mxy is not None and len(mxy) and np.min(np.hypot(mxy[:, 0] - s.x, mxy[:, 1] - s.y)) < min_sep_px:
-            continue
-        out.append(s)
-        if len(out) >= n:
-            break
-    return out
+    cand = [s for s in stars
+            if not (mxy is not None and len(mxy) and np.min(np.hypot(mxy[:, 0] - s.x, mxy[:, 1] - s.y)) < min_sep_px)]
+    if star_check and cand:
+        from .brightstars import near_star_mask
+        near = near_star_mask(plate, [(s.x, s.y) for s in cand], max_star_mag)
+        cand = [s for s, k in zip(cand, near) if not k]
+    return cand[:n]
 
 
 def auto_find(det, plate, start, end, lat=None, lon=None, h_km=0.0, n=8):
     """Try the brightest unmatched sources against every planet and the Moon over the window.
-    Returns [(mark, candidates)], strongest first. Every hit still needs a look: a bright star that the
-    solver did not match, lying on a planet's path, would also hit."""
+    Returns [(mark, candidates)], strongest first. Sources on a catalogue star are skipped, but every hit
+    still needs a look: a satellite flare, an aircraft light or a hot pixel on a planet's path would also hit."""
     hits = []
     for s in bright_unmatched(det, plate, n):
         m = BodyMark(s.x, s.y)

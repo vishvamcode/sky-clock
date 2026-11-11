@@ -67,8 +67,9 @@ run every mode and see the error against the known truth.
    tripod work best.
 2. **Streaks.** Check the detected streaks. Untick aircraft (blinking dotted lines), meteors (short,
    tapered) and lens flares. Circles mark real endpoints; squares mark ends cut by the frame edge, which
-   are not used for timing. Dashed streaks (phone night modes stack many short frames) are used for
-   direction only.
+   are not used for timing. Dashed streaks (phone night modes stack many short frames) are split into
+   their dashes; when the dashes are evenly spaced and equally long, each dash is timed as one frame of the
+   stack and the ends count as the exposure start and end. Irregular dashes are used for direction only.
 3. **Mode.** Pick what you know (see the table). Uncertainties are 1 sigma: "time +-60 s" means you
    are fairly sure within a minute. If EXIF has a time, place or exposure, the app shows it and fills it
    in, but the EXIF clock is only used if you leave it in.
@@ -290,16 +291,22 @@ checklist for a real benchmark night is in [docs/validation/README.md](docs/vali
   plain crop is fine.
 * Uncatalogued objects (classified satellites, new launches before cataloguing), aircraft and meteors
   will not match; untick them.
-* Phone night modes stack frames: endpoints are not used for timing, so time comes only from what the
-  dashes give.
+* Phone night modes stack frames. Dash timing assumes frames of equal length taken at a steady rate, with
+  none dropped at the start or end, and a camera that does not move between frames. It was tested on
+  simulated stacks only (12 simulated photos, place known, exposure not given: time error median 0.37 s
+  and 90th percentile 2.22 s without dash timing; 0.22 s and 0.51 s with it). A streak cut by the frame edge, or
+  with a missing, merged or uneven dash, is used for direction only. Modes that align frames on the stars
+  (astrophotography modes) behave like a tracking mount, so use that setting (not tested).
 * Starlink manoeuvres make old elements wrong by km and seconds: use elements from within a day of the
   photo (Space-Track history).
 * The blind search over a whole night with ~10,000 LEO objects takes minutes on a laptop; narrow the window
   or region when you can.
 * Marked vertical edges must really be vertical: trees, leaning poles and sloping roof lines give a wrong
   zenith. Two long edges far apart across the frame work best.
-* Automatic planet finding only looks at bright objects the plate solver did not match to a star; a bright
-  star it skipped that lies on a planet's path also "matches", so check the suggestion before using it.
+* Automatic planet finding skips bright objects that sit on a catalogue star (115 named bright stars are
+  built in; with the astrometry.net Tycho-2 index files installed, everything down to
+  magnitude 4). An aircraft light, a satellite flare or a hot pixel on a planet's path still "matches", so
+  check the suggestion before using it. A planet within a few pixels of a bright star is skipped too.
   Saturated, bloated planet images centre less well than the 1.5 px assumed.
 * Observer height is fixed (default sea level); a mountain top at 2 km shifts the place by roughly that
   much along the line of sight.

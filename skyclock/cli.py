@@ -132,7 +132,8 @@ def cmd_detect(a):
     det = detect(gray)
     for st in det.streaks:
         print(f"#{st.id}: ({st.p1[0]:.1f},{st.p1[1]:.1f}) -> ({st.p2[0]:.1f},{st.p2[1]:.1f}) len {st.length_px:.0f}px "
-              f"snr {st.snr:.0f} clipped {st.clipped1},{st.clipped2} dashed {st.dashed}")
+              f"snr {st.snr:.0f} clipped {st.clipped1},{st.clipped2} dashed {st.dashed}"
+              + (f" ({len(st.dashes)} dashes)" if st.dashed else ""))
     print(f"{len(det.stars)} stars; notes: {det.notes}")
     if a.out:
         report.annotate(disp, det.streaks).save(a.out)

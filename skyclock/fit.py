@@ -7,8 +7,9 @@ satellite's range plus plate-solution systematics).
 
 Residuals are computed per streak in a gnomonic tangent plane centred on the observed arc:
   * cross-track: observed centre-line samples vs predicted track,
-  * along-track: trusted (unclipped, undashed) endpoints vs predicted exposure start/end; untrusted
-    endpoints only have to lie inside the predicted exposure track (one-sided).
+  * along-track: trusted endpoints (unclipped, and not dashed unless the dashes are a regular stack)
+    vs predicted exposure start/end; untrusted endpoints only have to lie inside the predicted exposure
+    track (one-sided); the interior dashes of a regular stack vs the predicted position at their times.
 
 Camera frame: a fixed tripod is Earth-fixed, so predicted directions are rotated into the sky frame
 at mid-exposure; on a tracking mount the camera follows the stars, so each instant uses its own
@@ -159,6 +160,8 @@ class Fitter:
         self.scale = scale_rad
         self._obs_xy = [gnomonic(ob.g_samples, ob) for ob in obs_list]
         self._obs_end_x = [gnomonic(ob.g_ends, ob)[0] for ob in obs_list]
+        self._obs_dash_x = [gnomonic(ob.dash_g, ob)[0] if getattr(ob, "dash_f", None) is not None and len(ob.dash_f)
+                            else np.zeros(0) for ob in obs_list]
         self.u = np.linspace(-1.0, 1.0, 61)  # track sampling grid, in units of the half-span
         self._span = [0.0] * self.m  # per streak: half-span (s) needed to cover the observed samples
 
@@ -187,12 +190,15 @@ class Fitter:
             xo, yo = self._obs_xy[i]
             for _ in range(3):
                 Hs = max(0.75 * T, self._span[i], 1.0)
-                tau = t + dts[i] + np.concatenate([Hs * self.u, [-T / 2, T / 2]])
+                fd = ob.dash_f if len(self._obs_dash_x[i]) else np.zeros(0)
+                tau = t + dts[i] + np.concatenate([Hs * self.u, [-T / 2, T / 2], fd * T, -fd * T])
                 r = self.track(k, t)(tau)
                 rel = r - o
                 d = camera_dirs(self.epoch, unit(rel), tau, t, self.tracking)
                 xp, yp = gnomonic(d, ob)
-                xg, yg = xp[:-2], yp[:-2]
+                nu = len(self.u)
+                xg, yg = xp[:nu], yp[:nu]
+                xdash = xp[nu + 2:]
                 margin = 0.05 * (xo.max() - xo.min() + 1e-9)
                 if xg.min() <= xo.min() - margin and xg.max() >= xo.max() + margin:
                     break
@@ -204,11 +210,16 @@ class Fitter:
             order = np.argsort(xg)
             yc = _interp_extrap(xo, xg[order], yg[order])
             rc = (yo - yc - cs[i]) / ob.sigma_rad
-            xs, xe = xp[-2], xp[-1]
+            xs, xe = xp[nu], xp[nu + 1]
             xo1, xo2 = self._obs_end_x[i]
             same = (xe - xs) * (xo2 - xo1) >= 0
             pred = (xs, xe) if same else (xe, xs)
             ra = [(xo_ - xp_) / ob.sigma_end_rad for xo_, xp_, ok in zip((xo1, xo2), pred, ob.trusted_ends) if ok]
+            # interior dashes of a stacked exposure: each is a timed point on the track (dash_timing)
+            nd = len(self._obs_dash_x[i])
+            if nd:
+                xd = xdash[:nd] if same else xdash[nd:]
+                ra += list((self._obs_dash_x[i] - xd) / ob.sigma_end_rad)
             # an untrusted end (frame edge, trees, fading, dashes) is not the exposure boundary, but the
             # visible streak must still lie inside the predicted exposure track: a satellite too slow to
             # cover the visible arc within the exposure is penalised (one-sided)

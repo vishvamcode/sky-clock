@@ -30,6 +30,9 @@ class Streak:
     length_px: float
     snr: float
     enabled: bool = True
+    # dashed streaks: each dash as [[x, y], [x, y]] (half-maximum ends), in order from p1 to p2. In a stacked
+    # night mode every dash is one sub-exposure, so regular dashes keep the exposure timing (observations.py)
+    dashes: list = field(default_factory=list)
 
     def to_dict(self):
         return asdict(self)
@@ -208,7 +211,7 @@ def detect(gray, min_length_px=None, k_mask=2.5, star_k=6.0, max_stars=400, edge
     out = []
     for i, s in enumerate(kept):
         out.append(Streak(i, s["p1"], s["p2"], s["c1"], s["c2"], s["dashed"], s["samples"], s["sigma"],
-                          s["width"], s["length"], s["snr"]))
+                          s["width"], s["length"], s["snr"], dashes=s.get("dashes", [])))
     if not stars:
         notes.append("no stars found: plate solving will fail")
     if sky is not None:
@@ -403,6 +406,15 @@ def _refine(res, sig, cl, edge_margin, sky=None):
         return float(abs(ts[min(max(k, 0), len(ts) - 1)] - t_end))
 
     rise1, rise2 = rise_px(ta, +1), rise_px(tb, -1)
+    dashes = []
+    if dashed:
+        above = Ssm[i0:i1 + 1] > half
+        edges = np.flatnonzero(np.diff(np.concatenate([[0], above.astype(int), [0]])))
+        for a_, b_ in zip(edges[::2], edges[1::2]):
+            if b_ - a_ < 2:  # a single station: noise or a star on the track
+                continue
+            da, db = edge_pos(i0 + a_, -1), edge_pos(i0 + b_ - 1, +1)
+            dashes.append([[float(v) for v in c + da * u], [float(v) for v in c + db * u]])
     p1 = c + ta * u
     p2 = c + tb * u
     em = edge_margin if edge_margin is not None else hw + 3.0
@@ -457,4 +469,4 @@ def _refine(res, sig, cl, edge_margin, sky=None):
     fade_lim = max(14.0, 4.0 * width)
     return dict(p1=[float(p1[0]), float(p1[1])], p2=[float(p2[0]), float(p2[1])],
                 c1=clipped(p1) or rise1 > fade_lim, c2=clipped(p2) or rise2 > fade_lim, rise=(rise1, rise2), fill=float(on_seg.mean()),
-                dashed=dashed, samples=pts.tolist(), sigma=sigma, width=width, length=float(tb - ta), snr=snr)
+                dashed=dashed, dashes=dashes, samples=pts.tolist(), sigma=sigma, width=width, length=float(tb - ta), snr=snr)

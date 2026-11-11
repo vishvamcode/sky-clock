@@ -262,8 +262,8 @@ def date_from_bodies(plate, s: Settings, det=None, progress=None):
         hits = B.auto_find(det, plate, start, end, s.lat, s.lon, s.h_km)
         for m, c in hits[:3]:
             names = sorted({x.body for x in c})
-            notes.append(f"Bright object at ({m.x:.0f}, {m.y:.0f}) lies on the path of {', '.join(names)}: if it is "
-                         "not a bright star, mark it as that planet to use it.")
+            notes.append(f"Bright object at ({m.x:.0f}, {m.y:.0f}) lies on the path of {', '.join(names)}: it is not a "
+                         "catalogue star; if it is not an aircraft or a flare either, mark it as that planet to use it.")
         if not hits:
             notes.append("No bright unmatched object lies on any planet's path in the date window.")
     if not marks:

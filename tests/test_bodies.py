@@ -111,3 +111,53 @@ def test_auto_find_skips_matched_stars(truth):
     hits = B.auto_find(det, plate, WHEN - timedelta(days=30), WHEN + timedelta(days=30))
     assert hits and any(c.body == "jupiter" and abs((c.time - WHEN).total_seconds()) < 3 * c.sigma_t_s
                         for c in hits[0][1])
+
+
+def _src(plate, ra, dec, flux):
+    from skyclock.detect import Star
+    from skyclock.geometry import radec_to_unit
+    x, y = plate.unit2pix(radec_to_unit(np.array([ra]), np.array([dec])))
+    return Star(float(x[0]), float(y[0]), flux)
+
+
+def test_auto_find_skips_unmatched_bright_stars(truth):
+    """Regulus and Pollux in the frame with Jupiter, all three left unmatched by the solver (saturated): the
+    finder must skip both stars and keep Jupiter. Failure control: with the star check off, Regulus (the
+    brightest) comes first."""
+    from skyclock.detect import Detection
+    from skyclock.brightstars import index_available, _query_index
+    plate = _plate(truth["jupiter"])
+    jx, jy = plate.unit2pix(truth["jupiter"][None, :])
+    from skyclock.detect import Star
+    jup = Star(float(jx[0]), float(jy[0]), 5e5)
+    stars = [jup, _src(plate, 152.0930, 11.9672, 9e5), _src(plate, 116.3290, 28.0262, 8e5)]  # Regulus, Pollux
+    if index_available():  # a mag 2.5-3.8 star that only the Tycho-2 index knows
+        ra, dec = (float(v) for v in unit_to_radec(truth["jupiter"]))
+        q = _query_index(ra, dec, 20.0, 3.8)
+        q = q[q[:, 2] > 2.6]
+        assert len(q)
+        stars.append(_src(plate, q[0, 0], q[0, 1], 7e5))
+    plate.matched_xy = np.zeros((0, 2))
+    det = Detection([], stars, (H, W), 1.0)
+    assert [(s.x, s.y) for s in B.bright_unmatched(det, plate)] == [(jup.x, jup.y)]
+    first = B.bright_unmatched(det, plate, star_check=False)[0]
+    assert (first.x, first.y) == (stars[1].x, stars[1].y)
+    hits = B.auto_find(det, plate, WHEN - timedelta(days=30), WHEN + timedelta(days=30))
+    assert len(hits) == 1 and abs(hits[0][0].x - jup.x) < 1e-6
+
+
+def test_builtin_bright_stars_agree_with_tycho2():
+    """The built-in table (Hipparcos via PyEphem) against the Tycho-2 index, star by star where Tycho-2 has
+    the star: catches a transcription error in the table."""
+    from skyclock.brightstars import BRIGHT, index_available, _query_index
+    if not index_available():
+        pytest.skip("query-starkd / Tycho-2 index not installed")
+    found = 0
+    for name, ra, dec, mag in BRIGHT:
+        q = _query_index(ra, dec, 0.1, 9.0)
+        q = q[np.abs(q[:, 2] - mag) < 0.6] if len(q) else q
+        if len(q):
+            found += 1
+            sep = np.hypot(((q[:, 0] - ra + 180) % 360 - 180) * np.cos(np.radians(dec)), q[:, 1] - dec).min()
+            assert sep < 0.02, (name, sep)
+    assert found >= 60, found
